@@ -16,11 +16,19 @@ CG_BASE        = "https://api.coingecko.com/api/v3"
 TG_BASE        = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 # ── SIGNAL LEVELS ─────────────────────────────────────────────
-SL_PCT  = 0.05   # -5%
-TP1_PCT = 0.05   # +5%
-TP2_PCT = 0.10   # +10%
-TP3_PCT = 0.15   # +15%
-TP4_PCT = 0.20   # +20%
+# SWING
+SWING_SL  = 0.05
+SWING_TP1 = 0.05
+SWING_TP2 = 0.10
+SWING_TP3 = 0.15
+SWING_TP4 = 0.20
+
+# SCALP
+SCALP_SL  = 0.03
+SCALP_TP1 = 0.03
+SCALP_TP2 = 0.05
+SCALP_TP3 = 0.08
+SCALP_TP4 = 0.12
 
 # ── HALAL WATCHLIST ───────────────────────────────────────────
 HALAL_WATCHLIST = [
@@ -393,6 +401,150 @@ def detect_wave_position(prices, vols, ath):
     }
 
 # ═══════════════════════════════════════════════════════════════
+# SCALP ANALYSIS ENGINE
+# ═══════════════════════════════════════════════════════════════
+
+def scalp_analysis(coin):
+    """
+    Scalp analysis using 14-day hourly data.
+    Golden Rule: Daily must be BULLISH before any scalp long.
+    Wave sensitivity: 3% minimum moves.
+    Hold time: 4-8 hours max.
+    """
+    coin_id = coin["id"]
+
+    # Daily bias check first (Golden Rule)
+    daily_prices, daily_vols = fetch_prices(coin_id, 90, "daily")
+    if len(daily_prices) < 20:
+        return None
+
+    # Daily trend
+    ma50_daily = sum(daily_prices[-50:])/50 if len(daily_prices)>=50 else daily_prices[-1]
+    daily_bull = daily_prices[-1] > ma50_daily
+
+    # Golden Rule: Daily must be bullish for scalp longs
+    if not daily_bull and daily_prices[-1] > daily_prices[-1]*0.85:
+        return None
+
+    # Fetch 14-day hourly data for scalp
+    prices, vols = fetch_prices(coin_id, 14, "hourly")
+    if len(prices) < 50:
+        return None
+
+    # Coin info for ATH
+    info = fetch_info(coin_id)
+    ath = info.get("market_data",{}).get("ath",{}).get("usd", max(prices))
+    current = prices[-1]
+    pct_ath = ((current-ath)/ath)*100
+
+    # Indicators on hourly
+    rsi_val = calc_rsi(prices)
+    stoch = calc_stoch(prices)
+    _,_,h_curr,h_prev = calc_macd(prices)
+    macd_cross   = h_curr>0 and h_prev<=0
+    macd_turning = h_curr>h_prev
+    ewo_val = calc_ewo(prices)
+
+    # Volume
+    avg_vol = sum(vols[-10:])/10 if len(vols)>=10 else 1
+    vol_exp = vols[-1] > avg_vol if vols else False
+
+    # Wave detection with 3% sensitivity for scalp
+    pivots = detect_pivots(prices, window=3)
+    ew_ok, ew_issues = validate_ew(pivots)
+
+    # Scalp entry detection (smaller moves)
+    entry_type = ""
+    w2_ret = 0
+    if len(pivots) >= 3:
+        w1_range = abs(pivots[1]["price"]-pivots[0]["price"])
+        if w1_range > 0:
+            w2_range = abs(pivots[2]["price"]-pivots[1]["price"])
+            w2_ret = (w2_range/w1_range)*100
+            if 38 <= w2_ret <= 100:
+                entry_type = "W2"
+    if len(pivots) >= 5:
+        w3_range = abs(pivots[3]["price"]-pivots[2]["price"])
+        if w3_range > 0:
+            w4_range = abs(pivots[4]["price"]-pivots[3]["price"])
+            w4_ret = (w4_range/w3_range)*100
+            if 23 <= w4_ret <= 38 and pivots[4]["price"] > pivots[1]["price"]:
+                entry_type = "W4"
+
+    # Additional checks
+    alt_valid, alt_note = check_alternation(pivots)
+    candle_name, candle_bull = detect_candlestick(prices)
+    in_channel, channel_note = check_channel(pivots, prices)
+    diagonal, diag_note = detect_ending_diagonal(pivots, prices)
+
+    # Scalp checklist (12 points)
+    checks = {
+        "daily_bull":    daily_bull,
+        "entry_zone":    entry_type != "",
+        "ew_valid":      ew_ok,
+        "wave_count":    len(pivots) >= 4,
+        "rsi_ok":        rsi_val < 50,
+        "rsi_oversold":  rsi_val < 40,
+        "stoch_ok":      stoch < 25,
+        "macd_ok":       macd_cross or macd_turning,
+        "ewo_ok":        ewo_val > 0,
+        "vol_exp":       vol_exp,
+        "candlestick":   candle_bull,
+        "no_diagonal":   not diagonal,
+    }
+
+    score = sum(checks.values())
+
+    # Minimum 7/12 for scalp signal
+    if score < 7:
+        return None
+
+    # Must have momentum
+    if not (checks["rsi_ok"] or checks["stoch_ok"] or checks["macd_ok"]):
+        return None
+
+    # Block if ending diagonal
+    if diagonal:
+        return None
+
+    # Golden Rule must pass
+    if not daily_bull:
+        return None
+
+    # Scalp signal levels (tighter)
+    sl  = current * (1-SCALP_SL)
+    tp1 = current * (1+SCALP_TP1)
+    tp2 = current * (1+SCALP_TP2)
+    tp3 = current * (1+SCALP_TP3)
+    tp4 = current * (1+SCALP_TP4)
+
+    if score >= 10:   conf = "🔥 HIGH"
+    elif score >= 8:  conf = "⚡ MEDIUM-HIGH"
+    else:             conf = "✳️ MEDIUM"
+
+    return {
+        "type":        "SCALP",
+        "sym":         coin["sym"],
+        "tier":        coin["tier"],
+        "current":     current,
+        "ath":         ath,
+        "pct_ath":     pct_ath,
+        "entry_type":  entry_type,
+        "score":       score,
+        "max_score":   12,
+        "conf":        conf,
+        "rsi":         rsi_val,
+        "stoch":       stoch,
+        "macd_cross":  macd_cross,
+        "candle":      candle_name,
+        "alt_note":    alt_note,
+        "sl":  sl, "tp1":tp1, "tp2":tp2, "tp3":tp3, "tp4":tp4,
+        "hold": "4-8 hours max",
+        "ew_valid":    ew_ok,
+        "ew_issues":   ew_issues,
+    }
+
+# ═══════════════════════════════════════════════════════════════
 # MULTI-TIMEFRAME ENGINE
 # ═══════════════════════════════════════════════════════════════
 
@@ -468,9 +620,26 @@ def full_analysis(coin):
     # Golden Rule: all timeframes must align
     golden_rule_pass = weekly_bull and daily_bull and h4_bull
 
-    # ── 18-POINT CHECKLIST ───────────────────────────────────
+    # ── EXTENDED ANALYSIS ────────────────────────────────────
     entry = wave_pos["entry_type"]
+    prices_daily = daily["prices"]
 
+    # Stochastic
+    stoch = calc_stoch(prices_daily)
+
+    # Alternation rule
+    alt_valid, alt_note = check_alternation(wave_pos["pivots"])
+
+    # Candlestick
+    candle_name, candle_bull = detect_candlestick(prices_daily)
+
+    # Wave channel
+    in_channel, channel_note = check_channel(wave_pos["pivots"], prices_daily)
+
+    # Ending diagonal
+    diagonal, diag_note = detect_ending_diagonal(wave_pos["pivots"], prices_daily)
+
+    # ── 23-POINT CHECKLIST ───────────────────────────────────
     checks = {
         # Timeframe alignment (4 checks)
         "c01_weekly_bull":    weekly_bull,
@@ -486,17 +655,23 @@ def full_analysis(coin):
         "c09_deep_level":     pct_ath < -60,
         # Fibonacci (1 check)
         "c10_fib_level":      -80 < pct_ath < -38,
-        # Momentum (3 checks)
+        # Momentum (4 checks — added stochastic)
         "c11_rsi_ok":         daily["rsi"] < 45,
         "c12_macd_ok":        daily["macd_cross"] or daily["macd_turning"],
-        "c13_ewo_positive":   daily["ewo"] > 0 or h4["ewo"] > 0 if h4 else daily["ewo"] > 0,
+        "c13_ewo_positive":   daily["ewo"] > 0 or (h4["ewo"] > 0 if h4 else False),
+        "c14_stoch_ok":       stoch < 25,
         # Volume (3 checks)
-        "c14_vol_declining":  daily["vol_dec"],
-        "c15_vol_expanding":  daily["vol_exp"] or (h1["vol_exp"] if h1 else False),
-        "c16_vol_ok":         daily["vol_dec"] or daily["vol_exp"],
-        # Structure (2 checks)
-        "c17_abc_structure":  len(wave_pos["waves"]) >= 5,
-        "c18_no_overlap":     wave_pos["ew_valid"],
+        "c15_vol_declining":  daily["vol_dec"],
+        "c16_vol_expanding":  daily["vol_exp"] or (h1["vol_exp"] if h1 else False),
+        "c17_vol_ok":         daily["vol_dec"] or daily["vol_exp"],
+        # Structure (5 checks — added alternation, channel, candlestick)
+        "c18_abc_structure":  len(wave_pos["waves"]) >= 5,
+        "c19_no_overlap":     wave_pos["ew_valid"],
+        "c20_alternation":    alt_valid,
+        "c21_channel":        in_channel,
+        "c22_candlestick":    candle_bull,
+        # Safety (1 check — no ending diagonal at entry)
+        "c23_no_diagonal":    not diagonal,
     }
 
     score = sum(checks.values())
@@ -506,12 +681,16 @@ def full_analysis(coin):
     if not golden_rule_pass and pct_ath > -40:
         return None
 
-    # Minimum 10/18 for signal
-    if score < 10:
+    # Minimum 12/23 for signal (was 10/18)
+    if score < 12:
         return None
 
-    # Must have some momentum confirmation
-    if not (checks["c11_rsi_ok"] or checks["c12_macd_ok"]):
+    # Must have momentum confirmation
+    if not (checks["c11_rsi_ok"] or checks["c12_macd_ok"] or checks["c14_stoch_ok"]):
+        return None
+
+    # Block if ending diagonal detected (bad entry point)
+    if diagonal:
         return None
 
     # ── SIGNAL LEVELS ─────────────────────────────────────────
@@ -539,6 +718,12 @@ def full_analysis(coin):
         "ew_valid":    wave_pos["ew_valid"],
         "ew_issues":   wave_pos["ew_issues"],
         "alternate":   wave_pos["alternate"],
+        "stoch":       stoch,
+        "alt_note":    alt_note,
+        "candle":      candle_name,
+        "channel":     channel_note,
+        "diagonal":    diagonal,
+        "diag_note":   diag_note,
         "score":       score,
         "conf":        conf,
         "checks":      checks,
@@ -575,24 +760,54 @@ def send_msg(msg):
         print(f"  TG error: {e}")
 
 def build_signal_msg(sig):
-    """Clean signal format — Entry, TP, SL only"""
-    entry = sig["entry_type"] or "Setup"
-    return (
-        f"🕌 <b>{sig['sym']}/USDT</b>\n"
+    """Build signal message for both swing and scalp"""
+    entry   = sig.get("entry_type") or "Setup"
+    stoch   = sig.get("stoch", 50)
+    candle  = sig.get("candle", "")
+    score   = sig.get("score", 0)
+    maxsc   = sig.get("max_score", 23)
+    stype   = sig.get("type", "SWING")
+    hold    = sig.get("hold", "")
+    
+    # Different TP labels based on type
+    if stype == "SCALP":
+        tp1_lbl = "(+3%)"
+        tp2_lbl = "(+5%)"
+        tp3_lbl = "(+8%)"
+        tp4_lbl = "(+12%)"
+        sl_lbl  = "(-3%)"
+        icon    = "⚡"
+    else:
+        tp1_lbl = "(+5%)"
+        tp2_lbl = "(+10%)"
+        tp3_lbl = "(+15%)"
+        tp4_lbl = "(+20%)"
+        sl_lbl  = "(-5%)"
+        icon    = "📈"
+
+    msg = (
+        f"{icon} <b>{stype} SIGNAL — {sig['sym']}/USDT</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"🟢 <b>Entry:</b>  {fp(sig['current']*0.99)} – {fp(sig['current']*1.01)}\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"🎯 <b>TP1:</b>    {fp(sig['tp1'])}  (+5%)\n"
-        f"🎯 <b>TP2:</b>    {fp(sig['tp2'])}  (+10%)\n"
-        f"🎯 <b>TP3:</b>    {fp(sig['tp3'])}  (+15%)\n"
-        f"🎯 <b>TP4:</b>    {fp(sig['tp4'])}  (+20%)\n"
+        f"🎯 <b>TP1:</b>    {fp(sig['tp1'])}  {tp1_lbl}\n"
+        f"🎯 <b>TP2:</b>    {fp(sig['tp2'])}  {tp2_lbl}\n"
+        f"🎯 <b>TP3:</b>    {fp(sig['tp3'])}  {tp3_lbl}\n"
+        f"🎯 <b>TP4:</b>    {fp(sig['tp4'])}  {tp4_lbl}\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"🔴 <b>SL:</b>     {fp(sig['sl'])}  (-5%)\n"
+        f"🔴 <b>SL:</b>     {fp(sig['sl'])}  {sl_lbl}\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 {entry} | Score: {sig['score']}/18 | {sig['conf']}\n"
+        f"📊 {entry} | Score: {score}/{maxsc} | {sig['conf']}\n"
+        f"📉 RSI: {sig.get('rsi',0):.0f} | Stoch: {stoch:.0f}\n"
+        f"🕯️ {candle}\n"
+    )
+    if hold:
+        msg += f"⏱ Hold: {hold}\n"
+    msg += (
         f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M')} UTC\n"
         f"<i>Spot · Halal · Not financial advice</i>"
     )
+    return msg
 
 # ═══════════════════════════════════════════════════════════════
 # MAIN BOT LOOP
@@ -636,21 +851,41 @@ def main():
             sym = coin["sym"]
             print(f"  {sym}...", end=" ", flush=True)
             try:
-                sig = full_analysis(coin)
-                if sig:
-                    last = sent_signals.get(sym, 0)
+                # ── SWING ANALYSIS ────────────────────────
+                swing_key = sym + "_swing"
+                swing_sig = full_analysis(coin)
+                if swing_sig:
+                    last = sent_signals.get(swing_key, 0)
                     if time.time()-last < 14400:  # 4hr cooldown
-                        print("cooldown")
-                        time.sleep(4)
-                        continue
-                    print(f"🔥 {sig['score']}/18 — {sig['conf']}")
-                    send_msg(build_signal_msg(sig))
-                    sent_signals[sym] = time.time()
-                    signals_found += 1
-                    time.sleep(3)
+                        print("swing(cooldown)", end=" ")
+                    else:
+                        swing_sig["type"] = "SWING"
+                        swing_sig["hold"] = "Days to weeks"
+                        print(f"📈 {swing_sig['score']}/23", end=" ")
+                        send_msg(build_signal_msg(swing_sig))
+                        sent_signals[swing_key] = time.time()
+                        signals_found += 1
+                        time.sleep(3)
+
+                # ── SCALP ANALYSIS ────────────────────────
+                scalp_key = sym + "_scalp"
+                time.sleep(3)  # Rate limit between calls
+                scalp_sig = scalp_analysis(coin)
+                if scalp_sig:
+                    last = sent_signals.get(scalp_key, 0)
+                    if time.time()-last < 7200:  # 2hr cooldown for scalp
+                        print("scalp(cooldown)")
+                    else:
+                        print(f"⚡ {scalp_sig['score']}/12")
+                        send_msg(build_signal_msg(scalp_sig))
+                        sent_signals[scalp_key] = time.time()
+                        signals_found += 1
+                        time.sleep(3)
                 else:
                     print("–")
+
                 time.sleep(5)  # Rate limit
+
             except Exception as e:
                 print(f"err: {e}")
                 time.sleep(6)
