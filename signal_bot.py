@@ -1,1314 +1,1643 @@
-import requests
+"""
+SIGNALSYM — signal_bot.py
+Elliott Wave Bot | Halal Spot Only | Binance API
+Developer: Yanal Masadeh (@YASAMA_11)
+
+════════════════════════════════════════════════════════════════
+YOUR BASE WAVE STRUCTURE — FIXED, NEVER CHANGES
+(From session doc Part 1 — this is the foundation of everything)
+════════════════════════════════════════════════════════════════
+
+GRAND SUPERCYCLE:
+  W1: $0.01 → $69,000          ✅ Complete
+  W2: $69,000 → $15,400        ✅ Complete (-77.7%)
+  W3: $15,400 → $350K–$450K    🔄 UNFOLDING NOW
+  W4: Future (-50 to -60% from W3 top)
+  W5: Future (Grand top above W3)
+
+INSIDE W3 (Cycle Degree):
+  W1 of W3: $15,400 → $126,200 (ATH Oct 2025)   ✅ Complete
+  W2 of W3: $126,200 → ~$74,500 (Zigzag ABC)    🔄 Near Complete
+  W3 of W3: ~$74,500 → $280K–$320K              ⏳ Next Major Move
+  W4 of W3: TBD ~$180K–$210K                    ⏳ Future
+  W5 of W3: TBD → $350K–$450K                   ⏳ Grand W3 Top
+
+W1 of W3 RANGE = $126,200 - $15,400 = $110,800
+W3 of W3 FIBONACCI TARGETS (from ~$74,500 base):
+  1.618 × $110,800 = ~$253,800
+  2.0   × $110,800 = ~$296,100
+  2.618 × $110,800 = ~$364,600
+  Most Likely Zone: $280,000 – $320,000
+
+W2 of W3 — CORRECTED ZIGZAG (5-3-5):
+  Wave A: $126,200 → $74,500  (5-wave impulse)  ✅ Complete
+  Wave B: $74,500  → $95,800  (3-wave, 57% ret) ✅ Complete
+  Wave C: $95,800  → ~$74,500 (5-wave decline)  🔄 Near Complete
+
+INVALIDATION LEVELS:
+  Below $69,000   → W2 of W3 invalidated — full recount needed
+  Below $15,400   → Entire Supercycle W3 invalidated
+  W3 of W3 below $126,200 → W4 rule violated — count collapses
+
+GOLDEN RULE:
+  Daily bias = BULLISH → only LONG signals on 4H / 1H / 15min
+  NEVER counter-trade the daily bias on smaller timeframes
+
+════════════════════════════════════════════════════════════════
+SIGNAL LEVELS (fixed — from session doc Part 4)
+════════════════════════════════════════════════════════════════
+SCALP (4H / 90 days):
+  SL=-5% | TP1=+3% | TP2=+5% | TP3=+8% | TP4=+10%
+  Hold: 1–3 days
+
+SWING (1D / 730 days):
+  SL = 2% below actual structure low (wave level)
+  TP1/2/3/4 = actual wave levels from chart structure
+  Hold: days to weeks
+
+════════════════════════════════════════════════════════════════
+CHECKLIST (session doc Part 3 — EXACT)
+════════════════════════════════════════════════════════════════
+REQUIRED (ALL 10 must pass — no exceptions):
+  1. Daily Trend Bullish
+  2. MA50 Confirmed
+  3. 5-Wave Impulse (core EW structure must exist)
+  4. EW Rules Valid (3 cardinal rules)
+  5. Entry Zone W2/W4 (correction bottom, not mid-impulse)
+  6. W2 Fib 38-100% of W1 (replaces ATH distance rule)
+  7. RSI Below 45 (oversold at entry)
+  8. MACD Bullish (momentum turning)
+  9. No Ending Diagonal
+  10. No Truncated W5
+
+SITUATIONAL (■ = not applicable = NOT a failure):
+  Wave Count >60% | Golden Ratio 38-78% | Wave C Bottom
+  C=A Price+Time | WXYXZ X1=X2 | ABC Structure
+  Stochastic <25 | SMI <-40 | EWO Signal
+  Volume Declining | Volume Expanding | Alternation W2 vs W4
+  Candlestick Pattern | Wave Symmetry | Blue Box Zone
+
+SCORE → ACTION:
+  All 10 required + 40%+ situational → SIGNAL
+  7-9 required → WATCH (monitor every 5 min)
+  Below 7 required → NO SIGNAL
+"""
+
 import time
+import logging
+import requests
+import numpy as np
 from datetime import datetime
 
-# ── CONFIG ────────────────────────────────────────────────────
-TELEGRAM_TOKEN = "7975488031:AAHLdeNTM-YIItriXwradU4bPyCMdR-mAIY"
-CHAT_ID        = "8422276082"
-BN_BASE        = "https://api.binance.com/api/v3"
-TG_BASE        = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+# ─────────────────────────────────────────────────────────────
+# CONFIG
+# ─────────────────────────────────────────────────────────────
+TELEGRAM_TOKEN         = "7975488031:AAHLdeNTM-YIItriXwradU4bPyCMdR-mAIY"
+CHAT_ID                = "8422276082"
+BINANCE_BASE           = "https://api.binance.com"
 
-# ── SIGNAL LEVELS ─────────────────────────────────────────────
-SWING_SL  = 0.05;  SWING_TP1 = 0.05;  SWING_TP2 = 0.10;  SWING_TP3 = 0.15;  SWING_TP4 = 0.20
-SCALP_SL  = 0.03;  SCALP_TP1 = 0.03;  SCALP_TP2 = 0.05;  SCALP_TP3 = 0.08;  SCALP_TP4 = 0.12
+SWING_DAYS             = 730
+SCALP_DAYS             = 90
+SCAN_INTERVAL          = 900        # 15 min
+COIN_SLEEP             = 1          # 1s between coins
+HEARTBEAT_SCANS        = 96         # every 24h
 
-# ── HALAL WATCHLIST ───────────────────────────────────────────
-# Format: {"sym": "BTC", "tier": 1}
-# All use BINANCE symbols — free, unlimited, no key needed
-HALAL_WATCHLIST = [
-    # TIER 1 — cryptohalal.cc verified
-    {"sym":"BTC",    "tier":1}, {"sym":"ETH",    "tier":1},
-    {"sym":"XRP",    "tier":1}, {"sym":"SOL",    "tier":1},
-    {"sym":"BNB",    "tier":1}, {"sym":"ADA",    "tier":1},
-    {"sym":"AVAX",   "tier":1}, {"sym":"SUI",    "tier":1},
-    {"sym":"HBAR",   "tier":1}, {"sym":"NEAR",   "tier":1},
-    {"sym":"DOT",    "tier":1}, {"sym":"ICP",    "tier":1},
-    {"sym":"FTM",    "tier":1}, {"sym":"ETC",    "tier":1},
-    {"sym":"WLD",    "tier":1}, {"sym":"RENDER", "tier":1},
-    {"sym":"ATOM",   "tier":1}, {"sym":"KAS",    "tier":1},
-    {"sym":"FIL",    "tier":1}, {"sym":"APT",    "tier":1},
-    {"sym":"ARB",    "tier":1}, {"sym":"VET",    "tier":1},
-    {"sym":"SEI",    "tier":1}, {"sym":"STX",    "tier":1},
-    {"sym":"TIA",    "tier":1}, {"sym":"GRT",    "tier":1},
-    {"sym":"OP",     "tier":1}, {"sym":"THETA",  "tier":1},
-    # TIER 2
-    {"sym":"XLM",    "tier":2}, {"sym":"ALGO",   "tier":2},
-    {"sym":"LTC",    "tier":2}, {"sym":"TON",    "tier":2},
-    {"sym":"LINK",   "tier":2}, {"sym":"POL",    "tier":2},
-    {"sym":"XTZ",    "tier":2}, {"sym":"IOTA",   "tier":2},
-    {"sym":"BCH",    "tier":2}, {"sym":"IMX",    "tier":2},
-    {"sym":"INJ",    "tier":2}, {"sym":"FET",    "tier":2},
-    {"sym":"OCEAN",  "tier":2}, {"sym":"AKT",    "tier":2},
-    {"sym":"AR",     "tier":2}, {"sym":"HNT",    "tier":2},
-    {"sym":"ONE",    "tier":2}, {"sym":"ZIL",    "tier":2},
-    {"sym":"QTUM",   "tier":2}, {"sym":"DCR",    "tier":2},
-    {"sym":"RVN",    "tier":2}, {"sym":"EGLD",   "tier":2},
-    {"sym":"FLOW",   "tier":2}, {"sym":"ANKR",   "tier":2},
-    {"sym":"STORJ",  "tier":2}, {"sym":"BAND",   "tier":2},
-    {"sym":"NMR",    "tier":2}, {"sym":"GLM",    "tier":2},
-    {"sym":"SKL",    "tier":2}, {"sym":"CELO",   "tier":2},
-    {"sym":"ROSE",   "tier":2}, {"sym":"CTSI",   "tier":2},
-    {"sym":"WAVES",  "tier":2}, {"sym":"DGB",    "tier":2},
-    # TIER 3
-    {"sym":"GALA",   "tier":3}, {"sym":"AXS",    "tier":3},
-    {"sym":"SAND",   "tier":3}, {"sym":"MANA",   "tier":3},
-    {"sym":"ENJ",    "tier":3}, {"sym":"CHZ",    "tier":3},
-    {"sym":"ASTR",   "tier":3}, {"sym":"BAT",    "tier":3},
-    {"sym":"LPT",    "tier":3}, {"sym":"AUDIO",  "tier":3},
-    {"sym":"CVC",    "tier":3}, {"sym":"POWR",   "tier":3},
-    {"sym":"HOT",    "tier":3},
+SWING_COOLDOWN         = 4 * 3600
+SCALP_COOLDOWN         = 2 * 3600
+WATCH_COOLDOWN_SWING   = 2 * 3600
+WATCH_COOLDOWN_SCALP   = 1 * 3600
+PRICE_MONITOR_INTERVAL = 300        # 5 min
+
+# Scalp: fixed always
+SCALP_SL_PCT  = 0.05
+SCALP_TP1_PCT = 0.03
+SCALP_TP2_PCT = 0.05
+SCALP_TP3_PCT = 0.08
+SCALP_TP4_PCT = 0.10
+
+# Swing: SL buffer below structure low
+SWING_SL_BUFFER = 0.02   # 2% below actual wave low
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("SIGNALSYM")
+
+# ─────────────────────────────────────────────────────────────
+# YOUR FIXED BASE WAVE STRUCTURE
+# These never change — they are the foundation of everything
+# ─────────────────────────────────────────────────────────────
+BASE = {
+    # Grand Supercycle
+    'W1_TOP':   69000,
+    'W2_BOT':   15400,
+    'W3_START': 15400,    # W3 origin (same as W2 bottom)
+
+    # Inside W3
+    'W1_OF_W3_BOT': 15400,
+    'W1_OF_W3_TOP': 126200,   # ATH Oct 2025
+    'W1_OF_W3_RNG': 110800,   # $126,200 - $15,400
+
+    # W2 of W3 Zigzag levels
+    'W2_OF_W3_WAVE_A_TOP': 126200,
+    'W2_OF_W3_WAVE_A_BOT': 74500,
+    'W2_OF_W3_WAVE_B_TOP': 95800,
+    'W2_OF_W3_WAVE_C_BOT': 74500,   # approximate bottom (near complete)
+
+    # W3 of W3 Fibonacci targets (from ~$74,500 base)
+    'W3_OF_W3_BASE':   74500,
+    'W3_OF_W3_T1618':  253800,   # 1.618 × W1
+    'W3_OF_W3_T200':   296100,   # 2.0 × W1
+    'W3_OF_W3_T2618':  364600,   # 2.618 × W1
+    'W3_OF_W3_ZONE_LO': 280000,
+    'W3_OF_W3_ZONE_HI': 320000,
+
+    # Future waves
+    'W4_OF_W3_ZONE_LO': 180000,
+    'W4_OF_W3_ZONE_HI': 210000,
+    'W5_OF_W3_TARGET_LO': 350000,
+    'W5_OF_W3_TARGET_HI': 450000,
+
+    # Invalidation levels
+    'INVAL_W2_OF_W3':  69000,    # below this = recount needed
+    'INVAL_W3':        15400,    # below this = catastrophic
+    'INVAL_W3_OF_W3':  126200,   # W3 of W3 below this = W4 rule violated
+}
+
+# ─────────────────────────────────────────────────────────────
+# 75 HALAL COINS (cryptohalal.cc verified)
+# ─────────────────────────────────────────────────────────────
+HALAL_COINS = [
+    # Tier 1
+    "BTC","ETH","XRP","SOL","BNB","ADA","AVAX","SUI","HBAR","NEAR",
+    "DOT","ICP","FTM","ETC","WLD","RENDER","ATOM","KAS","FIL","APT",
+    "ARB","VET","SEI","STX","TAO",
+    # Tier 2
+    "XLM","ALGO","LTC","TON","LINK","POL","XTZ","IOTA","BCH","IMX",
+    "INJ","FET","OCEAN","AKT","AR","HNT","ONE","ZIL","QTUM","DCR",
+    "RVN","EGLD","FLOW","ANKR","GRT","ROSE","KAVA","SKL","NMR","OP",
+    "CELO","BAND","WAXP","TWT",
+    # Tier 3
+    "GALA","AXS","SAND","MANA","ENJ","CHZ","ASTR","BAT","LPT",
+    "AUDIO","CVC","POWR","HOT",
 ]
 
-sent_signals = {}
-sent_watches = {}  # Track watch alerts separately
-scan_count = 0
+# ─────────────────────────────────────────────────────────────
+# STATE
+# ─────────────────────────────────────────────────────────────
+last_signal_time = {}
+active_trades    = {}
+watch_coins      = {}
+scan_count       = 0
 
-# Track active trades for TP/SL monitoring
-# Format: {sym_type: {entry, sl, tp1, tp2, tp3, tp4, hit_tp1, hit_tp2, hit_tp3, hit_tp4, closed}}
-active_trades = {}
 
-# ── TELEGRAM ──────────────────────────────────────────────────
-def send_msg(msg):
+# ═════════════════════════════════════════════════════════════
+# SECTION 1 — BINANCE DATA
+# ═════════════════════════════════════════════════════════════
+
+def get_klines(symbol, interval, days):
+    limits = {"1d": days, "4h": days * 6, "1w": max(1, days // 7)}
+    limit  = min(limits.get(interval, days), 1000)
+    url    = f"{BINANCE_BASE}/api/v3/klines"
     try:
-        requests.post(f"{TG_BASE}/sendMessage",
-            json={"chat_id":CHAT_ID,"text":msg,"parse_mode":"HTML"},
+        r = requests.get(url,
+            params={"symbol": f"{symbol}USDT", "interval": interval, "limit": limit},
             timeout=10)
-    except Exception as e:
-        print(f"  TG error: {e}")
-
-# ── BINANCE DATA ──────────────────────────────────────────────
-def fetch_klines(sym, interval="1d", limit=365):
-    """Fetch OHLCV from Binance — FREE, UNLIMITED, NO KEY"""
-    url = f"{BN_BASE}/klines"
-    params = {"symbol": sym+"USDT", "interval": interval, "limit": limit}
-    try:
-        r = requests.get(url, params=params, timeout=15)
+        r.raise_for_status()
         data = r.json()
-        if isinstance(data, dict) and data.get("code"):
-            return [], []
-        prices = [float(k[4]) for k in data]  # close price
-        vols   = [float(k[5]) for k in data]  # volume
-        return prices, vols
+        if not data or isinstance(data, dict):
+            return None
+        arr = lambda idx: np.array([float(c[idx]) for c in data])
+        return arr(1), arr(2), arr(3), arr(4), arr(5), np.array([int(c[0]) for c in data])
     except Exception as e:
-        print(f"  Binance error {sym}: {e}")
-        return [], []
+        log.warning(f"Binance {symbol} {interval}: {e}")
+        return None
 
-def fetch_ticker(sym):
-    """Fetch 24hr stats from Binance"""
+
+def get_global_ath(symbol):
+    """Global ATH from full weekly history — used for swing mode."""
     try:
-        r = requests.get(f"{BN_BASE}/ticker/24hr",
-            params={"symbol": sym+"USDT"}, timeout=10)
-        return r.json()
-    except:
-        return {}
+        r = requests.get(f"{BINANCE_BASE}/api/v3/klines",
+            params={"symbol": f"{symbol}USDT", "interval": "1w", "limit": 1000},
+            timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        return max(float(c[2]) for c in data) if data else None
+    except Exception:
+        return None
 
-# ── INDICATORS ────────────────────────────────────────────────
-def calc_rsi(prices, period=14):
-    if len(prices) < period+1: return 50
-    ag = al = 0
-    for i in range(1, period+1):
-        d = prices[i]-prices[i-1]
-        if d>0: ag+=d
-        else: al+=abs(d)
-    ag/=period; al/=period
-    for i in range(period, len(prices)):
-        d = prices[i]-prices[i-1]
-        ag = (ag*13+(d if d>0 else 0))/14
-        al = (al*13+(abs(d) if d<0 else 0))/14
-    return 100 if al==0 else 100-(100/(1+ag/al))
 
-def calc_ema(prices, period):
-    if len(prices)<period: return []
-    k=2/(period+1)
-    r=[sum(prices[:period])/period]
-    for p in prices[period:]: r.append(p*k+r[-1]*(1-k))
-    return r
+def get_current_price(symbol):
+    try:
+        r = requests.get(f"{BINANCE_BASE}/api/v3/ticker/price",
+            params={"symbol": f"{symbol}USDT"}, timeout=5)
+        return float(r.json()["price"])
+    except Exception:
+        return None
 
-def calc_macd(prices):
-    if len(prices)<35: return 0,0,0,0
-    ef=calc_ema(prices,12); es=calc_ema(prices,26)
-    ml=[ef[i+14]-es[i] for i in range(len(es))]
-    if len(ml)<9: return 0,0,0,0
-    sl=calc_ema(ml,9); diff=len(ml)-len(sl)
-    hist=[ml[i+diff]-sl[i] for i in range(len(sl))]
-    if len(hist)<2: return ml[-1],sl[-1],0,0
-    return ml[-1],sl[-1],hist[-1],hist[-2]
 
-def calc_stoch(prices, period=14):
-    if len(prices)<period: return 50
-    sl=prices[-period:]
-    high=max(sl); low=min(sl)
-    if high==low: return 50
-    return ((prices[-1]-low)/(high-low))*100
+# ═════════════════════════════════════════════════════════════
+# SECTION 2 — INDICATORS
+# ═════════════════════════════════════════════════════════════
 
-def calc_ewo(prices):
-    if len(prices)<35: return 0
-    return sum(prices[-5:])/5 - sum(prices[-35:])/35
+def _ema(data, n):
+    k = 2 / (n + 1)
+    e = [float(data[0])]
+    for v in data[1:]:
+        e.append(float(v) * k + e[-1] * (1 - k))
+    return np.array(e)
 
-# ── WAVE DETECTION ────────────────────────────────────────────
-def detect_pivots(prices, min_move=0.10):
-    n=len(prices)
-    if n<20: return []
-    win=max(3,n//20)
-    pivots=[]
-    for i in range(win,n-win):
-        sl=prices[i-win:i+win+1]
-        if prices[i]==max(sl) and prices[i]>prices[i-1] and prices[i]>prices[i+1]:
-            pivots.append({"idx":i,"price":prices[i],"type":"peak"})
-        elif prices[i]==min(sl) and prices[i]<prices[i-1] and prices[i]<prices[i+1]:
-            pivots.append({"idx":i,"price":prices[i],"type":"trough"})
-    st="trough" if prices[0]<prices[min(10,n-1)] else "peak"
-    pivots.insert(0,{"idx":0,"price":prices[0],"type":st})
-    pivots.append({"idx":n-1,"price":prices[-1],"type":"current"})
-    sig=[pivots[0]]
-    for p in pivots[1:]:
-        prev=sig[-1]
-        if prev["type"]==p["type"]:
-            if p["type"]=="peak" and p["price"]>prev["price"]: sig[-1]=p
-            elif p["type"]=="trough" and p["price"]<prev["price"]: sig[-1]=p
-            continue
-        if abs((p["price"]-prev["price"])/prev["price"])>=min_move:
-            sig.append(p)
-    return sig
 
-def validate_ew(pivots):
-    issues=[]
-    if len(pivots)>=3:
-        w1r=abs(pivots[1]["price"]-pivots[0]["price"])
-        if w1r>0:
-            w2r=abs(pivots[2]["price"]-pivots[1]["price"])/w1r*100
-            if pivots[2]["price"]<pivots[0]["price"]: issues.append("W2>100% W1")
-            elif w2r<38: issues.append(f"W2 shallow({w2r:.0f}%)")
-    if len(pivots)>=4:
-        if abs(pivots[3]["price"]-pivots[2]["price"])<abs(pivots[1]["price"]-pivots[0]["price"]):
-            issues.append("W3<W1")
-    if len(pivots)>=5 and pivots[4]["price"]<pivots[1]["price"]:
-        issues.append("W4 overlaps W1")
-    return len(issues)==0, issues
+def calc_rsi(closes, period=14):
+    if len(closes) < period + 1:
+        return None
+    d  = np.diff(closes.astype(float))
+    g  = np.where(d > 0, d, 0.0)
+    l  = np.where(d < 0, -d, 0.0)
+    ag = np.mean(g[:period])
+    al = np.mean(l[:period])
+    for i in range(period, len(g)):
+        ag = (ag * (period - 1) + g[i]) / period
+        al = (al * (period - 1) + l[i]) / period
+    return round(100.0 if al == 0 else 100 - 100 / (1 + ag / al), 2)
 
-def detect_entry(pivots, prices=None, rsi_val=50):
-    if len(pivots)<3: return "",0
-    
-    # Check W2 bottom
-    w1r=abs(pivots[1]["price"]-pivots[0]["price"])
-    if w1r>0:
-        w2r=abs(pivots[2]["price"]-pivots[1]["price"])/w1r*100
-        if 38<=w2r<=100: return "W2",w2r
-    
-    # Check W4 bottom
-    if len(pivots)>=5:
-        w3r=abs(pivots[3]["price"]-pivots[2]["price"])
-        if w3r>0:
-            w4r=abs(pivots[4]["price"]-pivots[3]["price"])/w3r*100
-            if 23<=w4r<=38 and pivots[4]["price"]>pivots[1]["price"]:
-                return "W4",w4r
-    
-    # Check Wave C bottom (ABC correction complete)
-    if prices and len(pivots)>=4:
-        is_c,label,ret = detect_wave_c_bottom(pivots, prices, rsi_val)
-        if is_c:
-            return "Wave C", ret
-    
-    return "",0
 
-def detect_wave_c_bottom(pivots, prices, rsi_val):
+def calc_macd(closes, fast=12, slow=26, sig=9):
+    if len(closes) < slow + sig:
+        return None, None, False
+    ml   = _ema(closes, fast) - _ema(closes, slow)
+    sl   = _ema(ml, sig)
+    hist = ml - sl
+    bull = bool(hist[-1] > 0 and hist[-2] <= 0) or bool(hist[-1] > hist[-2] > 0)
+    return float(ml[-1]), float(sl[-1]), bull
+
+
+def calc_stoch(closes, highs, lows, k=14):
+    if len(closes) < k:
+        return None
+    lo, hi = np.min(lows[-k:]), np.max(highs[-k:])
+    return round(50.0 if hi == lo else (closes[-1] - lo) / (hi - lo) * 100, 2)
+
+
+def calc_smi(closes, highs, lows, period=13, smooth=25):
+    if len(closes) < period + smooth:
+        return None
+    mid  = (highs[-period:] + lows[-period:]) / 2
+    diff = closes[-period:] - mid
+    rng  = np.where(
+        highs[-period:] - lows[-period:] == 0,
+        0.0001,
+        highs[-period:] - lows[-period:]
+    )
+    return round(float(_ema(200 * diff / rng, smooth)[-1]), 2)
+
+
+def calc_ewo(closes, fast=5, slow=35):
+    if len(closes) < slow:
+        return None, False
+    val = float(_ema(closes, fast)[-1] - _ema(closes, slow)[-1])
+    return round(val, 6), val > 0
+
+
+def calc_ma50(closes):
+    return float(np.mean(closes[-50:])) if len(closes) >= 50 else None
+
+
+def volume_analysis(volumes, lb=10):
+    if len(volumes) < lb + 2:
+        return False, False
+    v        = volumes[-lb - 1:-1]
+    declining = bool(np.polyfit(range(len(v)), v, 1)[0] < 0)
+    expanding = bool(volumes[-1] > np.mean(v) * 1.2)
+    return declining, expanding
+
+
+def daily_trend_bullish(closes_1d):
+    """Price above MA50 AND last 5 closes trending up — Golden Rule."""
+    if len(closes_1d) < 50:
+        return False
+    return bool(
+        closes_1d[-1] > np.mean(closes_1d[-50:]) and
+        closes_1d[-1] > closes_1d[-5]
+    )
+
+
+# ═════════════════════════════════════════════════════════════
+# SECTION 3 — PIVOT DETECTION
+# ═════════════════════════════════════════════════════════════
+
+def find_pivots(highs, lows, window=5):
     """
-    Detect Wave C bottom of ABC correction.
-    This is a HIGH-PROBABILITY entry point — start of new impulse.
-    
-    Structure needed:
-    W1 up → W2 down → W3 up → W4 down → W5 up → Wave A down → Wave B up → Wave C down
-    Wave C should:
-    - Drop below Wave A low (or equal)
-    - RSI divergence: price lower than Wave A, RSI higher (bullish divergence)
-    - Stochastic oversold
-    - Volume declining into Wave C
+    Adaptive window pivot detection.
+    Tries window=5 first, falls back to 3 if not enough pivots.
+    Returns list of (bar_index, price, 'H' or 'L').
+    """
+    for w in [window, 3]:
+        pivots = []
+        n = len(highs)
+        for i in range(w, n - w):
+            is_h = all(highs[i] >= highs[i-j] for j in range(1, w+1)) and \
+                   all(highs[i] >= highs[i+j] for j in range(1, w+1))
+            is_l = all(lows[i]  <= lows[i-j]  for j in range(1, w+1)) and \
+                   all(lows[i]  <= lows[i+j]  for j in range(1, w+1))
+            if is_h:
+                pivots.append((i, float(highs[i]), 'H'))
+            elif is_l:
+                pivots.append((i, float(lows[i]),  'L'))
+        if len(pivots) >= 8:
+            break
+    return pivots
+
+
+# ═════════════════════════════════════════════════════════════
+# SECTION 4 — 3 CARDINAL EW RULES
+# ═════════════════════════════════════════════════════════════
+
+def validate_ew_rules(w0, w1h, w2l, w3h, w4l, w5h):
+    """
+    The 3 Cardinal Rules — must never be broken:
+    Rule 1: W2 NEVER retraces more than 100% of W1
+    Rule 2: W3 is NEVER the shortest impulse wave
+    Rule 3: W4 NEVER overlaps W1 territory
+    """
+    issues = []
+    w1 = w1h - w0
+    if w1 <= 0:
+        return False, ["W1 range zero"]
+    if w2l <= w0:
+        issues.append("Rule 1 violated: W2 > 100% of W1")
+    w3 = w3h - w2l
+    w5 = w5h - w4l
+    if w3 <= 0:
+        issues.append("W3 range zero")
+    elif w3 < w1 and w3 < w5:
+        issues.append("Rule 2 violated: W3 is shortest")
+    if w4l <= w1h:
+        issues.append("Rule 3 violated: W4 overlaps W1")
+    if w5h <= w3h:
+        issues.append("W5 below W3 top")
+    return len(issues) == 0, issues
+
+
+def fib_quality(retrace):
+    """W2 retracement quality. Returns (label, is_valid, is_golden)."""
+    if 0.618 <= retrace <= 0.786:
+        return "GOLDEN (61.8–78.6%)", True, True
+    elif 0.500 <= retrace < 0.618:
+        return "GOOD (50–61.8%)", True, False
+    elif 0.382 <= retrace < 0.500:
+        return "VALID (38.2–50%)", True, False
+    elif 0.786 < retrace <= 1.000:
+        return "DEEP (78.6–100%)", True, False
+    return f"INVALID ({retrace*100:.1f}%)", False, False
+
+
+# ═════════════════════════════════════════════════════════════
+# SECTION 5 — STRUCTURE DETECTION
+#
+# The bot reads the CHART and identifies which of the 5 patterns
+# exists. Each structure has its own:
+#   - Detection logic and EW rule validation
+#   - Entry price (from actual wave level)
+#   - Swing SL (2% below actual structure low)
+#   - Swing TPs (from actual wave levels and Fib extensions)
+#   - Applicable situational checks (■ for N/A ones)
+#
+# For SCALP mode: levels are always fixed %, structure only
+# determines which situational checks apply.
+# ═════════════════════════════════════════════════════════════
+
+def _find_impulse(pivots):
+    """Find most recent valid completed 5-wave impulse (L H L H L H)."""
+    for i in range(len(pivots) - 6, -1, -1):
+        seg = pivots[i:i+6]
+        if len(seg) < 6:
+            continue
+        if [p[2] for p in seg] != ['L','H','L','H','L','H']:
+            continue
+        valid, _ = validate_ew_rules(
+            seg[0][1], seg[1][1], seg[2][1],
+            seg[3][1], seg[4][1], seg[5][1]
+        )
+        if valid:
+            return seg
+    return None
+
+
+def _post_impulse_waves(pivots, impulse):
+    """Get pivots that come after a completed impulse."""
+    w5_idx = impulse[5][0]
+    return [p for p in pivots if p[0] > w5_idx]
+
+
+# ── 5.1 Standard EW — W4 entry (active impulse unfolding) ────
+
+def detect_standard_ew_w4(pivots, current):
+    """
+    Active 5-wave impulse, price currently at W4 correction.
+    Pattern in pivots: L H L H L (5 pivots — W5 not yet formed)
+
+    Entry: W4 bottom
+    SL (swing): 2% below W4 low
+    TP1: W3 top (first resistance)
+    TP2: W4 + 1.618×W1 (W5 projection — most common)
+    TP3: W4 + 2.0×W1
+    TP4: W4 + 2.618×W1 (extended W5)
+
+    Situational: wave_count, golden_ratio, alternation, blue_box,
+                 stoch, smi, ewo, vol_dec, vol_exp
+    """
+    if len(pivots) < 5:
+        return None
+    for i in range(len(pivots) - 5, -1, -1):
+        seg = pivots[i:i+5]
+        if len(seg) < 5:
+            continue
+        if [p[2] for p in seg] != ['L','H','L','H','L']:
+            continue
+        w0  = seg[0][1]; w1h = seg[1][1]
+        w2l = seg[2][1]; w3h = seg[3][1]
+        w4l = seg[4][1]
+        w1  = w1h - w0;  w3  = w3h - w2l
+        if w1 <= 0 or w3 <= 0:
+            continue
+        # Partial EW rules (no W5 yet)
+        if w2l <= w0:        continue   # Rule 1
+        if w3 < w1:          continue   # Rule 2 partial
+        if w4l <= w1h:       continue   # Rule 3
+        # Price must be near W4 bottom (within 5%)
+        if abs(current - w4l) / w4l > 0.05:
+            continue
+        w2_ret = (w1h - w2l) / w1
+        w4_ret = (w3h - w4l) / w3
+        fib_lbl, fib_valid, fib_golden = fib_quality(w2_ret)
+        # Blue box: 0.618–0.786 Fib of W3
+        bb_lo = w3h - w3 * 0.786
+        bb_hi = w3h - w3 * 0.618
+        return {
+            'type':        'STANDARD_EW_W4',
+            'label':       'Standard EW — W4 Entry',
+            'w0':w0,'w1h':w1h,'w2l':w2l,'w3h':w3h,'w4l':w4l,'w5h':None,
+            'w1':w1, 'w3':w3,
+            'w2_ret':round(w2_ret,3), 'w4_ret':round(w4_ret,3),
+            'fib_lbl':fib_lbl, 'fib_valid':fib_valid, 'fib_golden':fib_golden,
+            'in_blue_box': bb_lo <= current <= bb_hi,
+            'alternation': abs(w2_ret - w4_ret) > 0.15,
+            'entry_price': w4l,  'struct_low': w4l,
+            # Swing levels — structure based
+            'swing_sl':  round(w4l * (1 - SWING_SL_BUFFER), 6),
+            'swing_tp1': round(w3h, 6),              # W3 top
+            'swing_tp2': round(w4l + w1*1.618, 6),   # 1.618 W5 proj
+            'swing_tp3': round(w4l + w1*2.0,   6),
+            'swing_tp4': round(w4l + w1*2.618, 6),
+            'tp1_lbl': 'W3 high retest',
+            'tp2_lbl': '1.618×W1 (W5 projection)',
+            'tp3_lbl': '2.0×W1',
+            'tp4_lbl': '2.618×W1',
+            'sl_lbl':  '2% below W4 low',
+            'entry_wave': 'W4',
+            # Checklist flags
+            '_ew_valid': True,
+            '_fib_check': fib_valid,
+            '_fib_check_lbl': f'W2 Fib 38-100% of W1: {fib_lbl}',
+            '_no_end_diag': True,
+            '_no_trunc_w5': True,
+            # Applicable situational checks
+            'sit_apply': ['wave_count','golden_ratio','alternation','blue_box',
+                          'stoch','smi','ewo','vol_dec','vol_exp'],
+        }
+    return None
+
+
+# ── 5.2 Standard EW — W2 entry (after full impulse complete) ─
+
+def detect_standard_ew_w2(pivots, current):
+    """
+    Completed 5-wave impulse, price now back at W2 level (new cycle start).
+    Pattern: L H L H L H (6 pivots — impulse complete)
+
+    Entry: W2 bottom (new cycle begins)
+    SL (swing): 2% below W2 low
+    TP1: W1 top retest
+    TP2: W2 + 1.618×W1 (W3 target — most powerful)
+    TP3: W2 + 2.618×W1
+    TP4: Prior W5 top
+
+    Situational: wave_count, golden_ratio, wave_sym,
+                 stoch, smi, ewo, vol_dec, vol_exp
     """
     if len(pivots) < 6:
-        return False, "", 0
-
-    # Need at least 6 pivots to identify ABC after impulse
-    # Look for pattern: peak → trough (Wave A) → peak (Wave B) → trough (Wave C)
-    # Find the most recent ABC structure
-    
-    # Scan from end backwards to find ABC
-    n = len(pivots)
-    
-    # Check last 3-4 pivots for ABC pattern
-    if n >= 4:
-        # Most recent: potential Wave C trough
-        last = pivots[n-1]
-        prev = pivots[n-2]  # Wave B peak
-        prev2 = pivots[n-3]  # Wave A trough
-        prev3 = pivots[n-4]  # Wave 5 peak (impulse top)
-        
-        # Wave C bottom criteria:
-        # 1. Last pivot is a trough (bottom)
-        # 2. prev is a peak (Wave B)
-        # 3. prev2 is a trough (Wave A)
-        # 4. prev3 is a peak (Wave 5 top)
-        
-        is_wave_c = (
-            last["type"] in ["trough", "current"] and
-            prev["type"] == "peak" and
-            prev2["type"] == "trough" and
-            prev3["type"] == "peak"
-        )
-        
-        if is_wave_c:
-            wave_a_low = prev2["price"]
-            wave_b_high = prev["price"]
-            wave_c_low = last["price"]
-            wave5_high = prev3["price"]
-            
-            # Wave C must be below Wave B
-            c_below_b = wave_c_low < wave_b_high
-            
-            # Wave B should retrace 38-78% of Wave A
-            wave_a_size = abs(wave5_high - wave_a_low)
-            wave_b_ret = (wave_b_high - wave_a_low) / wave_a_size * 100 if wave_a_size > 0 else 0
-            b_retrace_ok = 38 <= wave_b_ret <= 78
-            
-            # Wave C should be near or below Wave A low
-            c_near_a = wave_c_low <= wave_a_low * 1.05  # Within 5% of Wave A low
-            
-            # RSI at Wave C should be oversold
-            rsi_oversold = rsi_val < 45
-            
-            # Current price near Wave C bottom (within 5%)
-            current = prices[-1]
-            near_bottom = current <= wave_c_low * 1.08  # Within 8% of C bottom
-            
-            if c_below_b and near_bottom and (c_near_a or rsi_oversold):
-                # Calculate retrace for reference
-                abc_size = abs(wave5_high - wave_c_low)
-                return True, "Wave C", wave_b_ret
-    
-    return False, "", 0
-
-def check_alternation(pivots):
-    if len(pivots)<5: return False,"Need W4"
-    w1=abs(pivots[1]["price"]-pivots[0]["price"])
-    w3=abs(pivots[3]["price"]-pivots[2]["price"])
-    if not w1 or not w3: return False,"Cannot calc"
-    w2r=abs(pivots[2]["price"]-pivots[1]["price"])/w1*100
-    w4r=abs(pivots[4]["price"]-pivots[3]["price"])/w3*100
-    alt=(w2r>50 and w4r<40) or (w2r<40 and w4r>40) or abs(w2r-w4r)>15
-    return alt,f"W2:{w2r:.0f}% W4:{w4r:.0f}% {'✓' if alt else '≈'}"
-
-def detect_candlestick(prices):
-    if len(prices)<3: return "None",False
-    p1,p2,p3=prices[-1],prices[-2],prices[-3]
-    if p2<p3 and p1>p2 and (p1-p2)>(p3-p2)*0.5: return "Bullish Engulfing",True
-    if p2<p3*0.97 and p1>p2*1.02: return "Hammer",True
-    if p3>p2 and p2<p1 and p1>(p3+p2)/2: return "Morning Star",True
-    if abs(p1-p2)/p2<0.005 and p2<p3*0.98: return "Doji",True
-    return "No pattern",False
-
-def detect_diagonal(pivots,prices):
-    if len(pivots)<5: return False
-    r3=calc_rsi(prices[:min(pivots[3]["idx"]+1,len(prices))])
-    r5=calc_rsi(prices[:min(pivots[4]["idx"]+1,len(prices))])
-    return pivots[4]["price"]>=pivots[3]["price"] and r5<r3
-
-
-# ── WAVE SYMMETRY ─────────────────────────────────────────────
-def check_wave_symmetry(pivots):
-    if len(pivots) < 5: return False, "Need 5 waves"
-    w1 = abs(pivots[1]["price"]-pivots[0]["price"])
-    w3 = abs(pivots[3]["price"]-pivots[2]["price"])
-    w2 = abs(pivots[2]["price"]-pivots[1]["price"])
-    w4 = abs(pivots[4]["price"]-pivots[3]["price"])
-    score = 0; total = 0
-    if w1 > 0:
-        total += 1
-        if w3 >= w1: score += 1
-    if w2 > 0 and w4 > 0:
-        total += 1
-        if abs(w2-w4)/max(w2,w4) >= 0.15: score += 1
-    if len(pivots) >= 6:
-        w5 = abs(pivots[5]["price"]-pivots[4]["price"])
-        if w3 > 0:
-            total += 1
-            if w5 <= w3 * 1.2: score += 1
-    pct = score/total*100 if total > 0 else 50
-    return pct >= 60, f"Symmetry {pct:.0f}%"
-
-# ── BLUE BOX ──────────────────────────────────────────────────
-def calc_blue_box(pivots, current):
-    if len(pivots) < 3: return False, "No box"
-    w1_range = abs(pivots[1]["price"]-pivots[0]["price"])
-    direction = 1 if pivots[1]["price"] > pivots[0]["price"] else -1
-    fib618 = pivots[1]["price"] - direction * w1_range * 0.618
-    fib786 = pivots[1]["price"] - direction * w1_range * 0.786
-    box_top = max(fib618, fib786)
-    box_bot = min(fib618, fib786)
-    in_w2_box = box_bot <= current <= box_top
-    in_w4_box = False
-    if len(pivots) >= 5:
-        w3_range = abs(pivots[3]["price"]-pivots[2]["price"])
-        dir3 = 1 if pivots[3]["price"] > pivots[2]["price"] else -1
-        f382 = pivots[3]["price"] - dir3 * w3_range * 0.382
-        f618 = pivots[3]["price"] - dir3 * w3_range * 0.618
-        in_w4_box = min(f382,f618) <= current <= max(f382,f618)
-    in_box = in_w2_box or in_w4_box
-    label = "W2 Blue Box ✓" if in_w2_box else "W4 Blue Box ✓" if in_w4_box else "Outside Blue Box"
-    return in_box, label
-
-# ── SMI ───────────────────────────────────────────────────────
-def calc_smi(prices, period=14):
-    if len(prices) < period: return 0
-    sl = prices[-period:]
-    high = max(sl); low = min(sl)
-    mid = (high+low)/2
-    rng = high-low
-    if rng == 0: return 0
-    raw = ((prices[-1]-mid)/(rng/2))*100
-    return raw
-
-# ── TRUNCATED W5 ──────────────────────────────────────────────
-def detect_truncated_w5(pivots, prices):
-    if len(pivots) < 6: return False, "Need W5"
-    w3_high = pivots[3]["price"]
-    w5_high = pivots[5]["price"]
-    truncated = w5_high < w3_high and w5_high > pivots[4]["price"]
-    if truncated:
-        return True, "⚠️ Truncated W5 — Reversal imminent — DO NOT ENTER"
-    return False, "No truncation"
-
-
-# ── WAVE C BOTTOM DETECTOR ────────────────────────────────────
-def detect_wave_c_bottom(pivots, prices, current):
-    """
-    Detect ABC correction Wave C completion.
-    Wave C bottom = Fibonacci 0.618-1.0 of Wave A from Wave B top.
-    This is the highest probability entry in a correction.
-    """
-    if len(pivots) < 5:
-        return False, 0
-
-    # Look for ABC pattern in last 5 pivots
-    # Pattern: impulse top (A start) -> drop (A) -> bounce (B) -> drop (C)
-    for i in range(len(pivots)-4, -1, -1):
-        if i+4 >= len(pivots):
+        return None
+    for i in range(len(pivots) - 6, -1, -1):
+        seg = pivots[i:i+6]
+        if len(seg) < 6:
             continue
-        p0 = pivots[i]     # Before A
-        p1 = pivots[i+1]   # Wave A top (if bullish before)
-        p2 = pivots[i+2]   # Wave A bottom
-        p3 = pivots[i+3]   # Wave B top
-        p4 = pivots[i+4]   # Wave C bottom (current?)
-
-        # Valid ABC: p1=peak, p2=trough, p3=peak, p4=trough
-        if not(p1["type"]=="peak" and p2["type"]=="trough" and
-               p3["type"]=="peak" and p4["type"]=="trough"):
+        if [p[2] for p in seg] != ['L','H','L','H','L','H']:
             continue
-
-        wave_a = abs(p1["price"] - p2["price"])
-        wave_b = abs(p3["price"] - p2["price"])
-        wave_c = abs(p3["price"] - p4["price"])
-
-        if wave_a == 0:
+        w0  = seg[0][1]; w1h = seg[1][1]; w2l = seg[2][1]
+        w3h = seg[3][1]; w4l = seg[4][1]; w5h = seg[5][1]
+        valid, _ = validate_ew_rules(w0,w1h,w2l,w3h,w4l,w5h)
+        if not valid:
             continue
-
-        # Wave B should retrace 38-78% of Wave A
-        b_ret = wave_b / wave_a * 100
-        if not (38 <= b_ret <= 100):
+        if abs(current - w2l) / w2l > 0.05:
             continue
+        w1     = w1h - w0
+        w2_ret = (w1h - w2l) / w1
+        fib_lbl, fib_valid, fib_golden = fib_quality(w2_ret)
+        return {
+            'type':        'STANDARD_EW_W2',
+            'label':       'Standard EW — W2 Entry',
+            'w0':w0,'w1h':w1h,'w2l':w2l,'w3h':w3h,'w4l':w4l,'w5h':w5h,
+            'w1':w1, 'w3':w3h-w2l,
+            'w2_ret':round(w2_ret,3), 'w4_ret':round((w3h-w4l)/(w3h-w2l),3),
+            'fib_lbl':fib_lbl, 'fib_valid':fib_valid, 'fib_golden':fib_golden,
+            'in_blue_box': False, 'alternation': None,
+            'entry_price': w2l, 'struct_low': w2l,
+            'swing_sl':  round(w2l * (1 - SWING_SL_BUFFER), 6),
+            'swing_tp1': round(w1h, 6),              # W1 top retest
+            'swing_tp2': round(w2l + w1*1.618, 6),   # W3 target
+            'swing_tp3': round(w2l + w1*2.618, 6),
+            'swing_tp4': round(w5h, 6),               # prior W5 top
+            'tp1_lbl': 'W1 high retest',
+            'tp2_lbl': '1.618×W1 (W3 target)',
+            'tp3_lbl': '2.618×W1',
+            'tp4_lbl': 'Prior W5 top',
+            'sl_lbl':  '2% below W2 low',
+            'entry_wave': 'W2',
+            '_ew_valid': True,
+            '_fib_check': fib_valid,
+            '_fib_check_lbl': f'W2 Fib 38-100% of W1: {fib_lbl}',
+            '_no_end_diag': True,
+            '_no_trunc_w5': True,
+            'sit_apply': ['wave_count','golden_ratio','wave_sym',
+                          'stoch','smi','ewo','vol_dec','vol_exp'],
+        }
+    return None
 
-        # Wave C should be 61.8% to 161.8% of Wave A
-        c_ratio = wave_c / wave_a * 100
-        if not (50 <= c_ratio <= 170):
-            continue
 
-        # Current price should be near Wave C bottom
-        c_bottom = p4["price"]
-        proximity = abs(current - c_bottom) / c_bottom * 100
+# ── 5.3 ABC Zigzag — completed impulse + 5-3-5 correction ────
 
-        if proximity <= 5:  # Within 5% of Wave C bottom
-            return True, c_ratio
-
-    return False, 0
-
-
-# ── FIBONACCI W1 RETRACE CALCULATOR ─────────────────────────
-def calc_fib_retrace(pivots):
+def detect_abc_zigzag(pivots, current):
     """
-    Calculate actual W2 retracement of W1.
-    This is the professional EW entry standard.
-    Returns (retrace_pct, is_valid_fib, fib_level)
-    """
-    if len(pivots) < 3:
-        return 0, False, ""
+    Completed 5-wave impulse followed by ABC Zigzag (5-3-5):
+      Wave A = 5-wave impulse down
+      Wave B = 3-wave bounce (38–78% of A) ← zigzag rule
+      Wave C = 5-wave decline, C ≈ A in price
 
-    w1_start = pivots[0]["price"]
-    w1_end   = pivots[1]["price"]
-    w2_end   = pivots[2]["price"]
+    This is exactly what BTC W2 of W3 is:
+      A: $126,200 → $74,500
+      B: $74,500  → $95,800 (57% retrace)
+      C: $95,800  → ~$74,500
 
-    w1_range = abs(w1_end - w1_start)
-    if w1_range == 0:
-        return 0, False, ""
+    And what INJ showed on the 4H chart.
 
-    w2_range  = abs(w2_end - w1_end)
-    retrace   = (w2_range / w1_range) * 100
+    Entry: Wave C bottom (when C ≥ 70% of A range)
+    SL (swing): 2% below Wave C low
+    TP1: Wave B top (prior bounce high — first resistance)
+    TP2: W5 top (Wave A origin — full correction retrace)
+    TP3: Wave C + 1.618×Wave A
+    TP4: Wave C + 2.618×Wave A
 
-    # Professional Fibonacci levels
-    if retrace < 38.2:
-        fib_label = "Shallow (<38.2%)"
-        valid = False
-    elif retrace <= 50.0:
-        fib_label = "0.382 Fib Zone"
-        valid = True
-    elif retrace <= 61.8:
-        fib_label = "0.500 Fib Zone"
-        valid = True
-    elif retrace <= 78.6:
-        fib_label = "0.618 Golden Ratio"
-        valid = True
-    elif retrace <= 100:
-        fib_label = "0.786 Deep Fib"
-        valid = True
-    else:
-        fib_label = "W2 > 100% W1 (Invalid)"
-        valid = False
-
-    return retrace, valid, fib_label
-
-def calc_w4_fib_retrace(pivots):
-    """
-    Calculate W4 retracement of W3.
-    Valid W4: 23.6% to 50% of W3.
-    """
-    if len(pivots) < 5:
-        return 0, False, ""
-
-    w3_start = pivots[2]["price"]
-    w3_end   = pivots[3]["price"]
-    w4_end   = pivots[4]["price"]
-
-    w3_range = abs(w3_end - w3_start)
-    if w3_range == 0:
-        return 0, False, ""
-
-    w4_range = abs(w4_end - w3_end)
-    retrace  = (w4_range / w3_range) * 100
-
-    if 23.6 <= retrace <= 50.0:
-        return retrace, True, f"W4 Fib {retrace:.0f}% of W3"
-    else:
-        return retrace, False, f"W4 outside Fib ({retrace:.0f}%)"
-
-
-# ── C=A EQUALITY RULE ─────────────────────────────────────────
-def calc_c_equals_a(pivots, current):
-    """
-    The C=A rule: Wave C equals Wave A in length.
-    This is the highest probability reversal zone in an ABC correction.
-    Also checks C=1.618xA for extended corrections.
-    Returns: (at_ca_zone, ca_price, ca_ratio, label)
-    """
-    if len(pivots) < 4:
-        return False, 0, 0, "Need more data"
-
-    # Find ABC structure
-    # Look for: peak(A_start) -> trough(A_end=B_start) -> peak(B_end=C_start) -> trough(C_end)
-    for i in range(len(pivots)-3, -1, -1):
-        if i+3 >= len(pivots):
-            continue
-        p0 = pivots[i]
-        p1 = pivots[i+1]
-        p2 = pivots[i+2]
-        p3 = pivots[i+3]
-
-        # Valid: peak -> trough -> peak -> trough (bearish ABC)
-        if not (p0["type"]=="peak" and p1["type"]=="trough" and
-                p2["type"]=="peak" and p3["type"]=="trough"):
-            continue
-
-        wave_a = abs(p0["price"] - p1["price"])  # A length
-        if wave_a == 0:
-            continue
-
-        c_start = p2["price"]
-
-        # C=A target (most common)
-        ca_target = c_start - wave_a  # Where C would equal A
-        # C=1.618xA target (extended)
-        ca_ext_target = c_start - wave_a * 1.618
-
-        # Check if current price is near C=A zone (within 3%)
-        proximity_ca = abs(current - ca_target) / ca_target * 100
-        proximity_ext = abs(current - ca_ext_target) / ca_ext_target * 100
-
-        ca_ratio = (c_start - current) / wave_a * 100
-
-        if proximity_ca <= 5:
-            return True, ca_target, ca_ratio, f"C=A Zone ✓ (target: ${ca_target:,.0f})"
-        elif proximity_ext <= 5:
-            return True, ca_ext_target, ca_ratio, f"C=1.618xA Zone ✓ (target: ${ca_ext_target:,.0f})"
-        elif ca_ratio >= 80 and ca_ratio <= 120:
-            return True, ca_target, ca_ratio, f"Near C=A ({ca_ratio:.0f}% complete)"
-        else:
-            return False, ca_target, ca_ratio, f"C=A at ${ca_target:,.0f} ({ca_ratio:.0f}% complete)"
-
-    return False, 0, 0, "No ABC structure found"
-
-# ── W-X-Y COMPLEX CORRECTION ──────────────────────────────────
-def detect_wxy(pivots):
-    """
-    Detect W-X-Y complex correction (double zigzag).
-    Pattern: W(abc) -> X(bounce) -> Y(abc)
-    The X wave connects two corrective patterns.
-    This is what fatinhijjawi calls 'مركب' (compound).
-    """
-    if len(pivots) < 7:
-        return False, "Need more pivots"
-
-    # Look for alternating structure with 7+ pivots
-    # Simplified: if we have 7+ pivots and the overall direction is corrective
-    # and the middle bounce (X wave) retraces 38-78% of the W wave
-    try:
-        w_start = pivots[0]["price"]
-        w_end   = pivots[2]["price"]  # End of W wave
-        x_end   = pivots[3]["price"]  # End of X wave (bounce)
-        y_end   = pivots[6]["price"] if len(pivots) > 6 else pivots[-1]["price"]
-
-        w_size = abs(w_end - w_start)
-        if w_size == 0:
-            return False, "Invalid W wave"
-
-        x_retrace = abs(x_end - w_end) / w_size * 100
-
-        # X wave typically retraces 38-78% of W
-        if 38 <= x_retrace <= 78:
-            return True, f"W-X-Y Complex Correction (X={x_retrace:.0f}% retrace)"
-        else:
-            return False, f"Not W-X-Y (X={x_retrace:.0f}%)"
-    except:
-        return False, "Cannot determine"
-
-
-# ── W-X-Y-X-Z TRIPLE COMBINATION (fatinhijjawi method) ────────
-def detect_wxyxz(pivots, current):
-    """
-    Detects W-X-Y-X-Z triple combination corrective structure.
-    Key rule: The TWO X waves must be equal in price AND time.
-    When X1=X2 confirmed — Z wave bottom is highest confidence entry.
-    
-    Structure (bearish correction):
-    W = first ABC down
-    X1 = first bounce up  
-    Y = second ABC down
-    X2 = second bounce up (must equal X1)
-    Z = final leg down — ENTRY ZONE
+    Situational: wave_c_bot, c_eq_a, abc_struct,
+                 stoch, smi, ewo, vol_dec, vol_exp
     """
     if len(pivots) < 8:
-        return False, 0, 0, "Need 8+ pivots for WXYXZ"
-
-    # Need alternating peaks and troughs
-    # Pattern: trough-peak-trough-peak-trough-peak-trough-peak (8 points minimum)
-    # Or starting from peak for bearish correction:
-    # peak(W_start)-trough(W_end)-peak(X1_end)-trough(Y_end)-peak(X2_end)-trough(Z)
-
-    best_result = None
-
-    for i in range(len(pivots)-5):
-        if i+5 >= len(pivots):
-            continue
-
-        p0 = pivots[i]     # W start (peak)
-        p1 = pivots[i+1]   # W end / X1 start (trough)
-        p2 = pivots[i+2]   # X1 end / Y start (peak)
-        p3 = pivots[i+3]   # Y end / X2 start (trough)
-        p4 = pivots[i+4]   # X2 end / Z start (peak)
-        p5 = pivots[i+5]   # Z end (trough) — current or near current
-
-        # Validate structure: peak-trough-peak-trough-peak-trough
-        if not (p0["type"]=="peak" and p1["type"]=="trough" and
-                p2["type"]=="peak" and p3["type"]=="trough" and
-                p4["type"]=="peak" and p5["type"]=="trough"):
-            continue
-
-        # ── MEASURE X WAVES ───────────────────────────────
-        x1_price = abs(p2["price"] - p1["price"])
-        x1_time  = p2["idx"] - p1["idx"]
-        x2_price = abs(p4["price"] - p3["price"])
-        x2_time  = p4["idx"] - p3["idx"]
-
-        if x1_price == 0 or x1_time == 0:
-            continue
-
-        # X bounces must be significant (>5% moves)
-        x1_pct = x1_price / p1["price"] * 100 if p1["price"] else 0
-        x2_pct = x2_price / p3["price"] * 100 if p3["price"] else 0
-        if x1_pct < 5 or x2_pct < 5:
-            continue
-
-        # W and Y waves must be larger than X waves
-        w_size = abs(p1["price"] - p0["price"])
-        y_size = abs(p3["price"] - p2["price"])
-        if x1_price >= w_size * 0.8 or x2_price >= y_size * 0.8:
-            continue
-
-        # ── STRICT X1=X2 CHECK (within 15%) ───────────────
-        price_ratio = (x2_price / x1_price) * 100
-        time_ratio  = (x2_time  / x1_time)  * 100
-
-        price_equal = 85 <= price_ratio <= 115  # Strict 15%
-        time_equal  = 85 <= time_ratio  <= 115  # Strict 15%
-
-        both_equal = price_equal and time_equal  # BOTH required
-
-        # ── Z WAVE PROXIMITY ──────────────────────────────
-        # Is current price near the Z wave bottom?
-        z_bottom = p5["price"]
-        proximity = abs(current - z_bottom) / z_bottom * 100 if z_bottom else 100
-        near_z = proximity <= 8  # Within 8% of Z bottom
-
-        if both_equal:  # STRICT — only report when BOTH price and time equal
-            label = (
-                f"WXYXZ X1=X2 Price+Time ✓ "
-                f"({price_ratio:.0f}% price | {time_ratio:.0f}% time)"
-            )
-            best_result = {
-                "detected":    True,
-                "both_equal":  both_equal,
-                "price_equal": price_equal,
-                "time_equal":  time_equal,
-                "price_ratio": price_ratio,
-                "time_ratio":  time_ratio,
-                "near_z":      near_z,
-                "z_price":     z_bottom,
-                "x1_price":    x1_price,
-                "x2_price":    x2_price,
-                "confidence":  "HIGH",
-                "label":       label,
-            }
-            if both_equal and near_z:
-                break  # Best possible result found
-
-    if best_result:
-        return (
-            best_result["detected"],
-            best_result["z_price"],
-            best_result["price_ratio"],
-            best_result["label"]
-        )
-
-    return False, 0, 0, "No WXYXZ structure found"
-
-# ── SIGNAL ANALYSIS ───────────────────────────────────────────
-def analyze(coin, signal_type="swing"):
-    sym = coin["sym"]
-
-    if signal_type=="swing":
-        prices,vols = fetch_klines(sym,"1d",730)
-        min_move=0.10
-        sl_pct=SWING_SL; tp1=SWING_TP1; tp2=SWING_TP2; tp3=SWING_TP3; tp4=SWING_TP4
-        min_score=12; max_score=22
-        hold="Days to weeks"
-    else:
-        # Scalp: use 4h data for better wave detection
-        prices,vols = fetch_klines(sym,"4h",540)  # 90 days of 4H
-        min_move=0.05
-        sl_pct=SCALP_SL; tp1=SCALP_TP1; tp2=SCALP_TP2; tp3=SCALP_TP3; tp4=SCALP_TP4
-        min_score=7; max_score=13
-        hold="1-3 days (4H trade)"
-
-    if len(prices)<50: return None
-
-    current=prices[-1]
-    ath=max(prices)
-    pct_ath=((current-ath)/ath)*100
-
-    # Indicators
-    rsi_val=calc_rsi(prices)
-    _,_,h_curr,h_prev=calc_macd(prices)
-    stoch=calc_stoch(prices)
-    ewo=calc_ewo(prices)
-    macd_cross=h_curr>0 and h_prev<=0
-    macd_turn=h_curr>h_prev
-
-    # Waves
-    pivots=detect_pivots(prices,min_move)
-    ew_ok,ew_issues=validate_ew(pivots)
-    entry,w_ret=detect_entry(pivots, prices, rsi_val)
-    alt_ok,alt_note=check_alternation(pivots)
-    candle_name,candle_bull=detect_candlestick(prices)
-    diagonal=detect_diagonal(pivots,prices) if len(pivots)>=5 else False
-    sym_ok,sym_note=check_wave_symmetry(pivots)
-    inbox,box_label=calc_blue_box(pivots,current)
-    smi=calc_smi(prices)
-    trunc,trunc_note=detect_truncated_w5(pivots,prices) if len(pivots)>=6 else (False,"Need W5")
-    wave_c_ok,wave_c_ratio=detect_wave_c_bottom(pivots,prices,current)
-    # C=A equality rule (from fatinhijjawi's method)
-    ca_zone, ca_price, ca_ratio, ca_label = calc_c_equals_a(pivots, current)
-    # W-X-Y-X-Z triple combination (fatinhijjawi's X1=X2 rule)
-    wxyxz_ok, wxyxz_price, wxyxz_ratio, wxyxz_label = detect_wxyxz(pivots, current)
-    # Fibonacci retracement — professional EW entry standard
-    fib_retrace, fib_valid, fib_label = calc_fib_retrace(pivots)
-    w4_fib_ret, w4_fib_valid, w4_fib_label = calc_w4_fib_retrace(pivots)
-    # Entry is valid if W2 OR W4 Fibonacci levels are hit
-    fib_entry_ok = fib_valid or w4_fib_valid
-
-    # Volume
-    avg_vol=sum(vols[-20:])/20 if len(vols)>=20 else 1
-    vol_dec=(sum(vols[-5:])/5)<(sum(vols[-10:-5])/5) if len(vols)>=10 else False
-    vol_exp=vols[-1]>avg_vol if vols else False
-
-    # MA50
-    ma50=sum(prices[-50:])/50 if len(prices)>=50 else current
-    daily_bull=current>ma50 or pct_ath<-50
-
-    if signal_type=="swing":
-        checks={
-            "daily_bull":    daily_bull,
-            "ma50":          current>ma50,
-            "wave_count":    len(pivots)>=5,
-            "ew_valid":      ew_ok,
-            "entry_zone":    entry!="",
-            "wave_c_bottom": entry=="Wave C",  # Wave C = high probability entry
-            "fib_w1_retrace": fib_valid,
-            "fib_golden":    38.2<=fib_retrace<=78.6,
-            "fib_entry":     fib_entry_ok,
-            "rsi_ok":        rsi_val<45,
-            "stoch_ok":      stoch<25,
-            "macd_ok":       macd_cross or macd_turn,
-            "ewo_ok":        ewo!=0,
-            "vol_dec":       vol_dec,
-            "vol_exp":       vol_exp,
-            "abc_struct":    len(pivots)>=6,
-            "alternation":   alt_ok,
-            "candlestick":   candle_bull,
-            "no_diagonal":   not diagonal,
-            "wave_symmetry": sym_ok,
-            "blue_box":      inbox,
-            "smi_ok":        smi < -40,
-            "no_trunc_w5":   not trunc,
-            "wave_c_bottom": wave_c_ok,
-            "ca_zone":       ca_zone,   # C=A equality — highest prob reversal
-            "wxyxz":         wxyxz_ok,  # Triple combo X1=X2 — strongest signal
-        }
-    else:
-        # SCALP — uses 4H/90 day local waves
-        # Fibonacci measured from LOCAL 4H waves not grand cycle
-        wave_c_entry = entry == "Wave C" or wave_c_ok
-        checks={
-            # Timeframe
-            "daily_bull":    daily_bull,
-            # Wave Structure
-            "wave_count":    len(pivots)>=4,
-            "ew_valid":      ew_ok or wave_c_entry,
-            "entry_zone":    entry!="",
-            "wave_c_bottom": wave_c_entry,
-            "ca_zone":       ca_zone,   # C=A equality check
-            "wxyxz":         wxyxz_ok,  # Triple combo X1=X2
-            # Fibonacci of LOCAL 4H waves (professional standard)
-            "fib_entry":     fib_entry_ok,    # 4H W2 or W4 Fib level hit
-            "fib_valid":     fib_valid,        # 4H W2 retraced 38.2-100% of 4H W1
-            # Momentum
-            "rsi_ok":        rsi_val<50,
-            "stoch_ok":      stoch<30,
-            "macd_ok":       macd_cross or macd_turn,
-            # Volume
-            "vol_exp":       vol_exp,
-            # Structure
-            "candlestick":   candle_bull,
-            "alternation":   alt_ok,
-            # Safety
-            "no_diagonal":   not diagonal,
-            "not_overbought": rsi_val<70,
-        }
-
-    score=sum(checks.values())
-
-    # REQUIRED checks — these MUST ALL pass regardless of total score
-    # Situational checks (C=A, WXYXZ, wave_c, alternation etc.) 
-    # add confidence but are NOT required on every chart
-    if signal_type=="swing":
-        core_required = [
-            checks.get("daily_bull"),
-            checks.get("ma50"),
-            checks.get("wave_count"),
-            checks.get("ew_valid"),
-            checks.get("entry_zone"),
-            checks.get("fib_w1_retrace"),
-            checks.get("rsi_ok"),
-            checks.get("macd_ok"),
-            checks.get("no_diagonal"),
-            checks.get("no_trunc_w5"),
-        ]
-    else:
-        core_required = [
-            checks.get("daily_bull"),
-            checks.get("wave_count"),
-            checks.get("entry_zone"),
-            checks.get("fib_entry") or checks.get("fib_valid"),
-            checks.get("rsi_ok"),
-            checks.get("macd_ok"),
-            checks.get("no_diagonal"),
-            checks.get("not_overbought"),
-        ]
-
-    all_required_pass = all(core_required)
-    watch_min = max(4, int(min_score*0.60))  # 60% of min score = watch alert
-
-    # Block bad setups always
-    if diagonal: return None
-    if trunc: return None
-
-    # WATCH alert — close but not ready
-    if watch_min <= score < min_score:
-        missing = []
-        if not checks.get("rsi_ok"):    missing.append("RSI not oversold")
-        if not checks.get("stoch_ok"):  missing.append("Stoch not oversold")
-        if not checks.get("macd_ok"):   missing.append("MACD not bullish")
-        if not checks.get("entry_zone"):missing.append("No entry zone")
-        if not checks.get("daily_bull"):missing.append("Daily not bullish")
-        if signal_type=="swing" and not checks.get("fib_w1_retrace"):
-            missing.append(f"W2 Fib not hit ({fib_retrace:.0f}% retrace — need 38-100%)")
-        reason = " | ".join(missing[:3]) if missing else "Setup developing"
-        return {
-            "watch":   True,
-            "type":    signal_type.upper(),
-            "sym":     sym,
-            "current": current,
-            "score":   score,
-            "max":     min_score,
-            "rsi":     rsi_val,
-            "stoch":   stoch,
-            "entry":   entry,
-            "checks":  checks,
-            "reason":  reason,
-        }
-
-    # Full signal qualifications
-    # ALL core required checks must pass
-    if not all_required_pass: return None
-    # Total score must meet minimum
-    if score < min_score: return None
-
-    # Levels
-    sl  = current*(1-sl_pct)
-    t1  = current*(1+tp1)
-    t2  = current*(1+tp2)
-    t3  = current*(1+tp3)
-    t4  = current*(1+tp4)
-
-    if wxyxz_ok and score>=int(max_score*0.55): conf="🔥🔥 WXYXZ X1=X2 - HIGHEST CONFIDENCE"
-    elif score>=int(max_score*0.85): conf="🔥 HIGH"
-    elif score>=int(max_score*0.70): conf="⚡ MEDIUM-HIGH"
-    else: conf="✳️ MEDIUM"
-
+        return None
+    impulse = _find_impulse(pivots)
+    if impulse is None:
+        return None
+    w5h    = impulse[5][1]
+    post   = _post_impulse_waves(pivots, impulse)
+    if len(post) < 2:
+        return None
+    # Wave A — first Low after W5 (decline ≥ 8% of W5)
+    a_piv  = next((p for p in post if p[2] == 'L'), None)
+    if a_piv is None:
+        return None
+    wa_bot   = a_piv[1]
+    wa_range = w5h - wa_bot
+    if wa_range / max(w5h, 0.0001) < 0.08:
+        return None
+    # Wave B — first High after A, retrace 38–78% of A (zigzag)
+    post_a = [p for p in post if p[0] > a_piv[0]]
+    b_piv  = next((p for p in post_a if p[2] == 'H'), None)
+    if b_piv is None:
+        return None
+    wb_top  = b_piv[1]
+    wb_ret  = (wb_top - wa_bot) / wa_range
+    if not (0.38 <= wb_ret <= 0.78):
+        return None   # not a zigzag — check expanded flat instead
+    # Wave C — decline from B, approaching C=A target
+    post_b   = [p for p in post if p[0] > b_piv[0]]
+    c_piv    = next((p for p in post_b if p[2] == 'L'), None)
+    c_dev    = c_piv is None
+    wc_bot   = current if c_dev else c_piv[1]
+    wc_range = wb_top - wc_bot
+    if wc_range <= 0:
+        return None
+    c_progress  = wc_range / wa_range * 100
+    c_eq_a_tgt  = wb_top - wa_range
+    c_confirmed = abs(wc_bot - c_eq_a_tgt) / max(abs(c_eq_a_tgt), 0.0001) < 0.05
+    if c_progress < 70:
+        return None
     return {
-        "type":     signal_type.upper(),
-        "sym":      sym,
-        "tier":     coin["tier"],
-        "current":  current,
-        "ath":      ath,
-        "pct_ath":  pct_ath,
-        "entry":    entry,
-        "w_ret":    w_ret,
-        "score":    score,
-        "max":      max_score,
-        "conf":     conf,
-        "rsi":      rsi_val,
-        "stoch":    stoch,
-        "macd_cross": macd_cross,
-        "candle":   candle_name,
-        "alt":      alt_note,
-        "hold":     hold,
-        "sl":sl,"tp1":t1,"tp2":t2,"tp3":t3,"tp4":t4,
+        'type':  'ABC_ZIGZAG',
+        'label': 'ABC Zigzag Correction',
+        'w5h': w5h,
+        'wa_bot': wa_bot, 'wa_range': wa_range,
+        'wb_top': wb_top, 'wb_ret_pct': round(wb_ret*100, 1),
+        'wc_bot': wc_bot, 'wc_range': wc_range, 'c_dev': c_dev,
+        'c_eq_a_tgt': round(c_eq_a_tgt, 6),
+        'c_progress': round(c_progress, 1),
+        'c_confirmed': c_confirmed,
+        'entry_price': wc_bot, 'struct_low': wc_bot,
+        'swing_sl':  round(wc_bot * (1 - SWING_SL_BUFFER), 6),
+        'swing_tp1': round(wb_top, 6),              # Wave B top
+        'swing_tp2': round(w5h,    6),              # W5 top (correction origin)
+        'swing_tp3': round(wc_bot + wa_range*1.618, 6),
+        'swing_tp4': round(wc_bot + wa_range*2.618, 6),
+        'tp1_lbl': 'Wave B top',
+        'tp2_lbl': 'W5 top (correction origin)',
+        'tp3_lbl': '1.618×Wave A from C',
+        'tp4_lbl': '2.618×Wave A from C',
+        'sl_lbl':  '2% below Wave C low',
+        'entry_wave': 'Wave C',
+        '_ew_valid': True,
+        '_fib_check': c_progress >= 70,
+        '_fib_check_lbl': f'C=A Progress: {c_progress:.1f}% (≥70% required)',
+        '_no_end_diag': True,
+        '_no_trunc_w5': True,
+        'sit_apply': ['wave_c_bot','c_eq_a','abc_struct',
+                      'stoch','smi','ewo','vol_dec','vol_exp'],
     }
 
-# ── FORMAT ────────────────────────────────────────────────────
-def fp(p):
-    if not p and p!=0: return"N/A"
-    if p>=1000: return f"${p:,.0f}"
-    if p>=1: return f"${p:.4f}"
-    if p>=0.01: return f"${p:.5f}"
-    return f"${p:.7f}"
 
-def build_watch_msg(sym, sig_type, current, score, max_score, checks, rsi, stoch, entry, reason):
-    SEP = "\u2501" * 19
-    icon = "\u26a1" if sig_type == "SCALP" else "\U0001f4c8"
-    passing = [k for k,v in checks.items() if v]
-    failing = [k for k,v in checks.items() if not v]
-    return (
-        "\U0001f7e1 <b>WATCH ALERT - " + sym + "/USDT</b>\n" +
-        SEP + "\n" +
-        icon + " " + sig_type + " Setup Developing\n" +
-        "\U0001f4b0 Price: " + fp(current) + "\n" +
-        "\U0001f4ca Score: " + str(score) + "/" + str(max_score) + " (need " + str(int(max_score*0.55)) + "+)\n" +
-        SEP + "\n" +
-        "\u2705 Passing: " + str(len(passing)) + " checks\n" +
-        "\u274c Missing: " + str(len(failing)) + " checks\n" +
-        "\U0001f4c9 RSI: " + f"{rsi:.0f}" + " | Stoch: " + f"{stoch:.0f}" + "\n" +
-        ("\U0001f3af Entry Zone: " + entry + "\n" if entry else "") +
-        "\u26a0\ufe0f Reason: " + reason + "\n" +
-        SEP + "\n" +
-        "<i>Not a signal yet. Monitor closely.</i>"
+# ── 5.4 Expanded Flat — B exceeds W5 top ─────────────────────
+
+def detect_expanded_flat(pivots, current):
+    """
+    Flat correction where B wave EXCEEDS the origin (W5 top).
+    B retraces > 100% of A — this distinguishes it from zigzag.
+    C typically = 1.236–1.618 × A, ends below Wave A bottom.
+
+    Entry: Wave C bottom
+    SL (swing): 2% below Wave C low
+    TP1: Wave A bottom (prior support — now cleared)
+    TP2: Wave B top (the new high made during B)
+    TP3: Wave C + 1.618×Wave A
+    TP4: Wave C + 2.0×Wave A
+
+    Situational: wave_c_bot, abc_struct,
+                 stoch, smi, ewo, vol_dec, vol_exp
+    """
+    if len(pivots) < 8:
+        return None
+    impulse = _find_impulse(pivots)
+    if impulse is None:
+        return None
+    w5h  = impulse[5][1]
+    post = _post_impulse_waves(pivots, impulse)
+    if len(post) < 3:
+        return None
+    a_piv = next((p for p in post if p[2] == 'L'), None)
+    if a_piv is None:
+        return None
+    wa_bot   = a_piv[1]
+    wa_range = w5h - wa_bot
+    if wa_range <= 0:
+        return None
+    post_a = [p for p in post if p[0] > a_piv[0]]
+    b_piv  = next((p for p in post_a if p[2] == 'H'), None)
+    if b_piv is None:
+        return None
+    wb_top = b_piv[1]
+    # KEY: B must exceed W5 top
+    if wb_top <= w5h:
+        return None
+    wb_ret = (wb_top - wa_bot) / wa_range   # > 1.0
+    post_b = [p for p in post if p[0] > b_piv[0]]
+    c_piv  = next((p for p in post_b if p[2] == 'L'), None)
+    c_dev  = c_piv is None
+    wc_bot = current if c_dev else c_piv[1]
+    wc_range = wb_top - wc_bot
+    if wc_range <= 0:
+        return None
+    c_vs_a    = wc_range / wa_range
+    c_progress = min(c_vs_a / 1.236 * 100, 100)
+    if c_progress < 70:
+        return None
+    return {
+        'type':  'EXPANDED_FLAT',
+        'label': 'Expanded Flat Correction',
+        'w5h': w5h,
+        'wa_bot': wa_bot, 'wa_range': wa_range,
+        'wb_top': wb_top, 'wb_ret_pct': round(wb_ret*100, 1),
+        'wc_bot': wc_bot, 'wc_range': wc_range, 'c_dev': c_dev,
+        'c_vs_a_pct': round(c_vs_a*100, 1),
+        'c_progress': round(c_progress, 1),
+        'c_t1236': round(wb_top - wa_range*1.236, 6),
+        'c_t1618': round(wb_top - wa_range*1.618, 6),
+        'entry_price': wc_bot, 'struct_low': wc_bot,
+        'swing_sl':  round(wc_bot * (1 - SWING_SL_BUFFER), 6),
+        'swing_tp1': round(wa_bot, 6),              # Wave A bottom
+        'swing_tp2': round(wb_top, 6),              # Wave B top (new high)
+        'swing_tp3': round(wc_bot + wa_range*1.618, 6),
+        'swing_tp4': round(wc_bot + wa_range*2.0,   6),
+        'tp1_lbl': 'Wave A bottom',
+        'tp2_lbl': 'Wave B top (new high)',
+        'tp3_lbl': '1.618×Wave A from C',
+        'tp4_lbl': '2.0×Wave A from C',
+        'sl_lbl':  '2% below Wave C low',
+        'entry_wave': 'Wave C',
+        '_ew_valid': True,
+        '_fib_check': c_progress >= 70,
+        '_fib_check_lbl': f'C Progress ≥70% (1.236×A): {c_progress:.1f}%',
+        '_no_end_diag': True,
+        '_no_trunc_w5': True,
+        'sit_apply': ['wave_c_bot','abc_struct',
+                      'stoch','smi','ewo','vol_dec','vol_exp'],
+    }
+
+
+# ── 5.5 Running Correction — C above A bottom (very bullish) ──
+
+def detect_running_correction(pivots, current):
+    """
+    Market so strong it can't complete a full retrace.
+    C never reaches A bottom — forms a higher low.
+    B retraces 38–78% of A (normal), but C < A in size.
+
+    Very bullish signal — next impulse usually very powerful.
+
+    Entry: Wave C bottom (higher low vs A)
+    SL (swing): 2% below Wave C low
+    TP1: Wave B top
+    TP2: W5 top (full recovery)
+    TP3: W5 + 1.0×prior W1 (next new impulse)
+    TP4: W5 + 1.618×prior W1 (extended next impulse)
+
+    Situational: wave_c_bot, abc_struct, wave_count,
+                 stoch, smi, ewo, vol_dec, vol_exp
+    """
+    if len(pivots) < 8:
+        return None
+    impulse = _find_impulse(pivots)
+    if impulse is None:
+        return None
+    w5h   = impulse[5][1]
+    w1rng = impulse[1][1] - impulse[0][1]
+    post  = _post_impulse_waves(pivots, impulse)
+    if len(post) < 3:
+        return None
+    a_piv = next((p for p in post if p[2] == 'L'), None)
+    if a_piv is None:
+        return None
+    wa_bot   = a_piv[1]
+    wa_range = w5h - wa_bot
+    if wa_range <= 0:
+        return None
+    post_a = [p for p in post if p[0] > a_piv[0]]
+    b_piv  = next((p for p in post_a if p[2] == 'H'), None)
+    if b_piv is None:
+        return None
+    wb_top = b_piv[1]
+    wb_ret = (wb_top - wa_bot) / wa_range
+    if not (0.38 <= wb_ret <= 0.78):
+        return None
+    post_b = [p for p in post if p[0] > b_piv[0]]
+    c_piv  = next((p for p in post_b if p[2] == 'L'), None)
+    c_dev  = c_piv is None
+    wc_bot = current if c_dev else c_piv[1]
+    # KEY: C must stay ABOVE Wave A bottom (higher low)
+    if wc_bot <= wa_bot:
+        return None
+    wc_range = wb_top - wc_bot
+    c_vs_a   = wc_range / wa_range
+    if c_vs_a < 0.38:
+        return None
+    return {
+        'type':  'RUNNING_CORRECTION',
+        'label': 'Running Correction (Bullish)',
+        'w5h': w5h, 'w1rng': w1rng,
+        'wa_bot': wa_bot, 'wa_range': wa_range,
+        'wb_top': wb_top, 'wb_ret_pct': round(wb_ret*100, 1),
+        'wc_bot': wc_bot, 'wc_range': wc_range, 'c_dev': c_dev,
+        'c_vs_a_pct': round(c_vs_a*100, 1), 'higher_low': True,
+        'entry_price': wc_bot, 'struct_low': wc_bot,
+        'swing_sl':  round(wc_bot * (1 - SWING_SL_BUFFER), 6),
+        'swing_tp1': round(wb_top, 6),               # Wave B top
+        'swing_tp2': round(w5h,    6),               # W5 top
+        'swing_tp3': round(w5h + w1rng*1.0,   6),   # next impulse
+        'swing_tp4': round(w5h + w1rng*1.618, 6),   # extended
+        'tp1_lbl': 'Wave B top',
+        'tp2_lbl': 'W5 top (full recovery)',
+        'tp3_lbl': 'W5 + 1.0×W1 (next impulse)',
+        'tp4_lbl': 'W5 + 1.618×W1 (extended)',
+        'sl_lbl':  '2% below Wave C (higher low)',
+        'entry_wave': 'Wave C (Higher Low)',
+        '_ew_valid': True,
+        '_fib_check': True,
+        '_fib_check_lbl': 'C Above A Bottom (Higher Low) ✓',
+        '_no_end_diag': True,
+        '_no_trunc_w5': True,
+        'sit_apply': ['wave_c_bot','abc_struct','wave_count',
+                      'stoch','smi','ewo','vol_dec','vol_exp'],
+    }
+
+
+# ── 5.6 W-X-Y-X-Z Triple Combination ─────────────────────────
+
+def detect_wxyxz(pivots, current):
+    """
+    Complex 5-segment correction — rarest, highest confidence.
+    W=down, X1=up, Y=down, X2=up, Z=down
+
+    CRITICAL RULE (from fatinhijjawi):
+    X1 and X2 MUST be equal in BOTH price AND time within 15%.
+    When X1=X2 confirmed → Z bottom = HIGHEST CONFIDENCE entry.
+
+    Entry: Z wave bottom
+    SL (swing): 2% below Z low
+    TP1: X2 top (most recent connector high)
+    TP2: W top (correction origin = full recovery)
+    TP3: W top + 0.618×W range
+    TP4: W top + 1.0×W range
+
+    Situational: wxyxz_x1x2, wave_count,
+                 stoch, smi, ewo, vol_dec, vol_exp
+    """
+    if len(pivots) < 10:
+        return None
+    for i in range(len(pivots) - 10, -1, -1):
+        seg = pivots[i:i+10]
+        if len(seg) < 10:
+            continue
+        if [p[2] for p in seg[:5]] != ['H','L','H','L','H']:
+            continue
+        w_top  = seg[0][1]; w_bot  = seg[1][1]
+        x1_top = seg[2][1]; y_bot  = seg[3][1]
+        x2_top = seg[4][1]
+        x1_rng = x1_top - w_bot
+        x2_rng = x2_top - y_bot
+        x1_t   = seg[2][0] - seg[1][0]
+        x2_t   = seg[4][0] - seg[3][0]
+        if x1_rng <= 0 or x1_t <= 0:
+            continue
+        # X moves must be meaningful (>5%)
+        if w_bot > 0 and x1_rng / w_bot < 0.05:
+            continue
+        if y_bot > 0 and x2_rng / y_bot < 0.05:
+            continue
+        # X smaller than W and Y
+        w_rng = w_top - w_bot
+        y_rng = x1_top - y_bot
+        if x1_rng >= w_rng * 0.8 or x1_rng >= y_rng * 0.8:
+            continue
+        # KEY: X1=X2 both price AND time within 15%
+        price_diff = abs(x1_rng - x2_rng) / x1_rng
+        time_diff  = abs(x1_t   - x2_t)   / x1_t
+        if price_diff > 0.15 or time_diff > 0.15:
+            continue
+        # Z wave — lowest Low after X2 top
+        post_x2 = [p for p in pivots if p[0] > seg[4][0]]
+        z_piv   = next((p for p in post_x2 if p[2] == 'L'), None)
+        z_dev   = z_piv is None
+        z_bot   = current if z_dev else z_piv[1]
+        if not z_dev and z_bot >= y_bot:
+            continue
+        move_up = w_top - w_bot
+        return {
+            'type':  'WXYXZ',
+            'label': 'W-X-Y-X-Z Triple Combination',
+            'w_top': w_top, 'w_bot': w_bot,
+            'x1_top': x1_top, 'y_bot': y_bot, 'x2_top': x2_top,
+            'z_bot': z_bot, 'z_dev': z_dev,
+            'x1_rng': round(x1_rng,6), 'x2_rng': round(x2_rng,6),
+            'price_diff_pct': round(price_diff*100,1),
+            'time_diff_pct':  round(time_diff*100,1),
+            'x1_eq_x2': True,
+            'entry_price': z_bot, 'struct_low': z_bot,
+            'swing_sl':  round(z_bot  * (1 - SWING_SL_BUFFER), 6),
+            'swing_tp1': round(x2_top, 6),
+            'swing_tp2': round(w_top,  6),
+            'swing_tp3': round(w_top + move_up*0.618, 6),
+            'swing_tp4': round(w_top + move_up*1.0,   6),
+            'tp1_lbl': 'X2 top (connector high)',
+            'tp2_lbl': 'W origin (full recovery)',
+            'tp3_lbl': 'W top + 0.618×W range',
+            'tp4_lbl': 'W top + 1.0×W range',
+            'sl_lbl':  '2% below Z wave low',
+            'entry_wave': 'Wave Z',
+            '_ew_valid': True,
+            '_fib_check': True,
+            '_fib_check_lbl': f'X1=X2 Confirmed — Price {price_diff*100:.1f}% | Time {time_diff*100:.1f}%',
+            '_no_end_diag': True,
+            '_no_trunc_w5': True,
+            'sit_apply': ['wxyxz_x1x2','wave_count',
+                          'stoch','smi','ewo','vol_dec','vol_exp'],
+        }
+    return None
+
+
+# ═════════════════════════════════════════════════════════════
+# SECTION 6 — STRUCTURE RECOGNIZER
+# Priority: rarest/most specific first, most common last
+# ═════════════════════════════════════════════════════════════
+
+def recognize_structure(pivots, current):
+    """
+    Tries each detector in priority order.
+    Returns the first match (highest priority structure).
+    Rarest patterns checked first to avoid masking them.
+    """
+    for detector in [
+        detect_wxyxz,             # Rarest — X1=X2 strict rule
+        detect_expanded_flat,     # B > W5 top — specific signature
+        detect_running_correction, # C above A — bullish structure
+        detect_abc_zigzag,        # Most common post-impulse correction
+        detect_standard_ew_w4,    # Active impulse at W4
+        detect_standard_ew_w2,    # After impulse, new cycle W2
+    ]:
+        s = detector(pivots, current)
+        if s is not None:
+            return s
+    return None
+
+
+# ═════════════════════════════════════════════════════════════
+# SECTION 7 — SIGNAL LEVELS
+# SCALP: fixed % always (session doc Part 4)
+# SWING: actual wave levels from detected structure
+# ═════════════════════════════════════════════════════════════
+
+def build_levels(structure, current_price, mode):
+    """
+    SCALP: fixed percentages from session doc Part 4:
+      SL=-5% | TP1=+3% | TP2=+5% | TP3=+8% | TP4=+10%
+
+    SWING: structure wave levels (2% SL buffer below structure low)
+    """
+    e = current_price
+
+    if mode == 'scalp':
+        return {
+            'entry':   round(e, 6),
+            'sl':      round(e * (1 - SCALP_SL_PCT),  6),
+            'tp1':     round(e * (1 + SCALP_TP1_PCT), 6),
+            'tp2':     round(e * (1 + SCALP_TP2_PCT), 6),
+            'tp3':     round(e * (1 + SCALP_TP3_PCT), 6),
+            'tp4':     round(e * (1 + SCALP_TP4_PCT), 6),
+            'sl_pct':   -5.0, 'sl_lbl':  '-5% fixed',
+            'tp1_pct':  +3.0, 'tp1_lbl': '+3% fixed',
+            'tp2_pct':  +5.0, 'tp2_lbl': '+5% fixed',
+            'tp3_pct':  +8.0, 'tp3_lbl': '+8% fixed',
+            'tp4_pct': +10.0, 'tp4_lbl': '+10% fixed',
+            'mode': 'scalp', 'tp_hit': 0,
+        }
+
+    # Swing — pure structure levels
+    entry = structure['entry_price']
+    sl    = structure['swing_sl']
+    tp1   = structure['swing_tp1']
+    tp2   = structure['swing_tp2']
+    tp3   = structure['swing_tp3']
+    tp4   = structure['swing_tp4']
+
+    def pct(t):
+        return round((t - entry) / entry * 100, 1) if entry > 0 else 0
+
+    return {
+        'entry':   round(entry, 6),
+        'sl':      round(sl,  6),
+        'tp1':     round(tp1, 6),
+        'tp2':     round(tp2, 6),
+        'tp3':     round(tp3, 6),
+        'tp4':     round(tp4, 6),
+        'sl_pct':   pct(sl),  'sl_lbl':  structure['sl_lbl'],
+        'tp1_pct':  pct(tp1), 'tp1_lbl': structure['tp1_lbl'],
+        'tp2_pct':  pct(tp2), 'tp2_lbl': structure['tp2_lbl'],
+        'tp3_pct':  pct(tp3), 'tp3_lbl': structure['tp3_lbl'],
+        'tp4_pct':  pct(tp4), 'tp4_lbl': structure['tp4_lbl'],
+        'mode': 'swing', 'tp_hit': 0,
+    }
+
+
+# ═════════════════════════════════════════════════════════════
+# SECTION 8 — SIGNAL CHECKLIST
+# Exactly per session doc Part 3
+# 10 required (all must pass) + situational (■ = N/A, not failure)
+# ═════════════════════════════════════════════════════════════
+
+def run_checklist(structure, closes_1d, closes, highs, lows,
+                  rsi, macd_bull, stoch, smi, ewo_bull,
+                  vol_dec, vol_exp, current):
+    """
+    10 REQUIRED checks — adapted per structure type.
+    Situational checks — only applicable ones scored, rest = ■.
+    """
+    stype   = structure['type'] if structure else 'NONE'
+    applies = structure['sit_apply'] if structure else []
+
+    # ── REQUIRED ─────────────────────────────────────────────
+    # Check 5 and 6 adapt their label based on structure
+    req = {}
+
+    # 1. Daily Trend Bullish — Golden Rule
+    req['Daily Trend Bullish'] = daily_trend_bullish(closes_1d)
+
+    # 2. MA50 Confirmed
+    ma50 = calc_ma50(closes)
+    req['MA50 Confirmed'] = ma50 is not None and current > ma50
+
+    # 3. Core EW Structure Exists
+    req['5-Wave Impulse / Core Structure'] = structure is not None
+
+    # 4. EW Rules Valid (3 Cardinal Rules)
+    req['EW Rules Valid (3 Cardinal Rules)'] = (
+        structure.get('_ew_valid', False) if structure else False
     )
 
-def build_msg(sig):
-    # Add fib info to signal if available
-    icon="⚡" if sig["type"]=="SCALP" else "📈"
-    tp_labels=["(+3%)","+5%)","+8%)","+12%)"] if sig["type"]=="SCALP" else ["(+5%)","+10%)","+15%)","+20%)"]
-    sl_label="(-3%)" if sig["type"]=="SCALP" else "(-5%)"
-    return (
-        f"{icon} <b>{sig['type']} - {sig['sym']}/USDT</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"🟢 <b>Entry:</b>  {fp(sig['current']*0.99)} – {fp(sig['current']*1.01)}\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"🎯 <b>TP1:</b>    {fp(sig['tp1'])}  {tp_labels[0]}\n"
-        f"🎯 <b>TP2:</b>    {fp(sig['tp2'])}  ({tp_labels[1]}\n"
-        f"🎯 <b>TP3:</b>    {fp(sig['tp3'])}  ({tp_labels[2]}\n"
-        f"🎯 <b>TP4:</b>    {fp(sig['tp4'])}  ({tp_labels[3]}\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"🔴 <b>SL:</b>     {fp(sig['sl'])}  {sl_label}\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 {sig['entry'] or 'Setup'} | {sig['score']}/{sig['max']} | {sig['conf']}\n"
-        f"📉 RSI:{sig['rsi']:.0f} Stoch:{sig['stoch']:.0f} | {sig['candle']}\n"
-        f"⏱ Hold: {sig['hold']}\n"
-        f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M')} UTC\n"
-        f"<i>Spot · Halal · Not financial advice</i>"
+    # 5. Entry Zone — label and check adapt per structure
+    if structure:
+        entry = structure['entry_price']
+        near  = abs(current - entry) / max(entry, 0.0001) < 0.05
+        req[f"Entry Zone ({structure['entry_wave']})"] = near
+    else:
+        req['Entry Zone (none)'] = False
+
+    # 6. Fib check — adapts per structure
+    if structure:
+        req[structure['_fib_check_lbl']] = structure['_fib_check']
+    else:
+        req['W2 Fib 38-100% of W1'] = False
+
+    # 7. RSI Below 45 — oversold at entry
+    req[f'RSI Below 45 ({rsi:.0f})'] = rsi is not None and rsi < 45
+
+    # 8. MACD Bullish
+    req['MACD Bullish'] = bool(macd_bull)
+
+    # 9. No Ending Diagonal
+    req['No Ending Diagonal'] = (
+        structure.get('_no_end_diag', True) if structure else True
     )
 
-# ── FAST WATCH MONITOR ───────────────────────────────────────
-def monitor_watch_coins():
+    # 10. No Truncated W5
+    req['No Truncated W5'] = (
+        structure.get('_no_trunc_w5', True) if structure else True
+    )
+
+    req_pass  = sum(1 for v in req.values() if v)
+    req_total = len(req)
+
+    # ── SITUATIONAL ───────────────────────────────────────────
+    # All 16 from session doc — only applicable ones scored
+    ALL_SIT = {
+        'wave_count': (
+            'Wave Count Verified >60%',
+            lambda: bool(structure and structure.get('w1',0) > 0 and
+                         structure.get('w3',0) / structure.get('w1',1) > 1.0)
+        ),
+        'golden_ratio': (
+            'Golden Ratio 38-78%',
+            lambda: bool(structure and
+                         0.618 <= structure.get('w2_ret',0) <= 0.786)
+        ),
+        'wave_c_bot': (
+            'Wave C Bottom',
+            lambda: bool(structure and
+                         float(structure.get('c_progress',0)) >= 80)
+        ),
+        'c_eq_a': (
+            'C=A Price + Time',
+            lambda: bool(structure and structure.get('c_confirmed', False))
+        ),
+        'wxyxz_x1x2': (
+            'WXYXZ X1=X2 (Price+Time within 15%)',
+            lambda: bool(structure and structure.get('x1_eq_x2', False))
+        ),
+        'abc_struct': (
+            'ABC Structure',
+            lambda: stype in ('ABC_ZIGZAG','EXPANDED_FLAT','RUNNING_CORRECTION')
+        ),
+        'stoch': (
+            f'Stochastic Below 25 ({stoch:.0f})',
+            lambda: stoch is not None and stoch < 25
+        ),
+        'smi': (
+            f'SMI Below -40 ({smi:.0f})',
+            lambda: smi is not None and smi < -40
+        ),
+        'ewo': (
+            'EWO Signal',
+            lambda: ewo_bull is True
+        ),
+        'vol_dec': (
+            'Volume Declining (correction phase)',
+            lambda: bool(vol_dec)
+        ),
+        'vol_exp': (
+            'Volume Expanding (reversal candle)',
+            lambda: bool(vol_exp)
+        ),
+        'alternation': (
+            'Alternation W2 vs W4',
+            lambda: bool(structure and structure.get('alternation'))
+        ),
+        'candlestick': (
+            'Candlestick Pattern',
+            lambda: False   # requires OHLC pattern logic
+        ),
+        'wave_sym': (
+            'Wave Symmetry (W3>W1, W5<W3)',
+            lambda: bool(structure and
+                         structure.get('w3',0) > structure.get('w1',0))
+        ),
+        'blue_box': (
+            'Blue Box Zone (0.618–0.786 Fib)',
+            lambda: bool(structure and structure.get('in_blue_box', False))
+        ),
+    }
+
+    sit_scored = {}   # applicable — scored
+    sit_na     = []   # not applicable — ■
+
+    for key, (label, check_fn) in ALL_SIT.items():
+        if key in applies:
+            try:
+                sit_scored[label] = check_fn()
+            except Exception:
+                sit_scored[label] = False
+        else:
+            sit_na.append(label)
+
+    sit_pass  = sum(1 for v in sit_scored.values() if v)
+    sit_total = len(sit_scored)
+
+    return req_pass, req_total, sit_pass, sit_total, req, sit_scored, sit_na
+
+
+def confidence_label(req_pass, req_total, sit_pass, sit_total):
     """
-    Check all watch-alerted coins every 5 minutes.
-    If score improves to full signal — send immediately.
+    From session doc scoring:
+    6/6 HIGH → Full position size
+    4-5/6 MEDIUM → 50% position
+    Below 4 → Skip
+    Adapted for 10 required:
     """
-    if not sent_watches:
-        return
+    req_r = req_pass / req_total if req_total else 0
+    sit_r = sit_pass / sit_total if sit_total else 0.5
+    score = req_r * 0.7 + sit_r * 0.3
+    if score >= 0.90:   return 'HIGH — Full position'
+    elif score >= 0.75: return 'MEDIUM-HIGH — 75% position'
+    elif score >= 0.60: return 'MEDIUM — 50% position'
+    else:               return 'LOW — Skip'
 
-    now = time.time()
-    for key, watch_time in list(sent_watches.items()):
-        # Only monitor coins watched in last 6 hours
-        if now - watch_time > 21600:
+
+# ═════════════════════════════════════════════════════════════
+# SECTION 9 — TELEGRAM MESSAGES
+# ═════════════════════════════════════════════════════════════
+
+STRUCT_ICONS = {
+    'STANDARD_EW_W4':     '📊',
+    'STANDARD_EW_W2':     '📊',
+    'ABC_ZIGZAG':         '〽️',
+    'EXPANDED_FLAT':      '📐',
+    'RUNNING_CORRECTION': '🚀',
+    'WXYXZ':              '🔁',
+}
+
+
+def send_telegram(msg):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    try:
+        r = requests.post(url, json={
+            "chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"
+        }, timeout=10)
+        if not r.ok:
+            log.warning(f"Telegram: {r.text[:200]}")
+    except Exception as e:
+        log.warning(f"Telegram failed: {e}")
+
+
+def format_structure_lines(s):
+    """Structure-specific wave level lines for Telegram."""
+    t = s['type']
+    lines = []
+    if t in ('STANDARD_EW_W4', 'STANDARD_EW_W2'):
+        lines += [
+            f"W0 origin : ${s['w0']:,.4f}",
+            f"W1 top    : ${s['w1h']:,.4f}",
+            f"W2 bottom : ${s['w2l']:,.4f}  [{s['fib_lbl']}]",
+            f"W3 top    : ${s['w3h']:,.4f}",
+        ]
+        if t == 'STANDARD_EW_W4':
+            lines += [
+                f"W4 bottom : <b>${s['w4l']:,.4f}</b>  ← ENTRY",
+                f"W4 retrace: {s['w4_ret']*100:.1f}% of W3",
+            ]
+        else:
+            lines += [
+                f"W4 bottom : ${s['w4l']:,.4f}",
+                f"W5 top    : ${s['w5h']:,.4f}",
+                f"<b>W2 bottom: ${s['w2l']:,.4f}</b>  ← ENTRY (new cycle)",
+            ]
+    elif t in ('ABC_ZIGZAG', 'EXPANDED_FLAT', 'RUNNING_CORRECTION'):
+        lines += [
+            f"W5 top (origin) : ${s['w5h']:,.4f}",
+            f"Wave A bottom   : ${s['wa_bot']:,.4f}",
+            f"Wave B top      : ${s['wb_top']:,.4f}  ({s['wb_ret_pct']}% retrace)",
+            f"Wave C bottom   : <b>${s['wc_bot']:,.4f}</b>  "
+            f"{'(developing)' if s['c_dev'] else '✅'}  ← ENTRY",
+        ]
+        if t == 'ABC_ZIGZAG':
+            lines += [
+                f"C=A target  : ${s['c_eq_a_tgt']:,.4f}  ({s['c_progress']}% complete)",
+                f"{'✅ C=A CONFIRMED' if s['c_confirmed'] else '⏳ Approaching C=A target'}",
+            ]
+        elif t == 'EXPANDED_FLAT':
+            lines += [
+                f"B retrace   : {s['wb_ret_pct']}%  (B > W5 top ⚡ expanded)",
+                f"C target    : ${s['c_t1236']:,.4f} – ${s['c_t1618']:,.4f}",
+            ]
+        elif t == 'RUNNING_CORRECTION':
+            lines += [
+                f"C vs A      : {s['c_vs_a_pct']}% of Wave A",
+                "🚀 Higher low — C above A bottom — very bullish",
+            ]
+    elif t == 'WXYXZ':
+        lines += [
+            f"W top  : ${s['w_top']:,.4f}",
+            f"X1 top : ${s['x1_top']:,.4f}  (range: ${s['x1_rng']:,.4f})",
+            f"Y bot  : ${s['y_bot']:,.4f}",
+            f"X2 top : ${s['x2_top']:,.4f}  (range: ${s['x2_rng']:,.4f})",
+            f"X1=X2  : price {s['price_diff_pct']}% | time {s['time_diff_pct']}%  ✅",
+            f"Z bot  : <b>${s['z_bot']:,.4f}</b>  "
+            f"{'(developing)' if s['z_dev'] else '✅'}  ← ENTRY",
+            "🔥🔥 HIGHEST CONFIDENCE — X1=X2 Price+Time Confirmed",
+        ]
+    return "\n".join(lines)
+
+
+def format_signal_msg(symbol, structure, levels,
+                      req_pass, req_total, req_det,
+                      sit_pass, sit_total, sit_det, sit_na,
+                      confidence, mode):
+    icon  = STRUCT_ICONS.get(structure['type'], '📐')
+    mode_lbl = mode.upper()
+    struct_lines = format_structure_lines(structure)
+    failed = [k for k, v in req_det.items() if not v]
+    failed_str = ('\n⚠️ Failed: ' + ' | '.join(failed)) if failed else ''
+    # Swing level labels
+    if mode == 'swing':
+        sl_line  = f"🛑 SL    : ${levels['sl']:,.4f}  ({levels['sl_pct']}%)  [{levels['sl_lbl']}]"
+        tp1_line = f"🎯 TP1   : ${levels['tp1']:,.4f}  (+{levels['tp1_pct']}%)  [{levels['tp1_lbl']}]"
+        tp2_line = f"🎯 TP2   : ${levels['tp2']:,.4f}  (+{levels['tp2_pct']}%)  [{levels['tp2_lbl']}]"
+        tp3_line = f"🎯 TP3   : ${levels['tp3']:,.4f}  (+{levels['tp3_pct']}%)  [{levels['tp3_lbl']}]"
+        tp4_line = f"🎯 TP4   : ${levels['tp4']:,.4f}  (+{levels['tp4_pct']}%)  [{levels['tp4_lbl']}]"
+    else:
+        sl_line  = f"🛑 SL    : ${levels['sl']:,.4f}  (-5% fixed)"
+        tp1_line = f"🎯 TP1   : ${levels['tp1']:,.4f}  (+3%)"
+        tp2_line = f"🎯 TP2   : ${levels['tp2']:,.4f}  (+5%)"
+        tp3_line = f"🎯 TP3   : ${levels['tp3']:,.4f}  (+8%)"
+        tp4_line = f"🎯 TP4   : ${levels['tp4']:,.4f}  (+10%)"
+
+    msg = (
+        f"🟢 <b>SIGNAL — {symbol}</b> ({mode_lbl})\n"
+        f"{icon} {structure['label']}\n\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"<b>STRUCTURE</b>\n"
+        f"{struct_lines}\n\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"<b>LEVELS ({mode_lbl})</b>\n"
+        f"💵 Entry : <b>${levels['entry']:,.4f}</b>\n"
+        f"{sl_line}\n"
+        f"{tp1_line}\n"
+        f"{tp2_line}\n"
+        f"{tp3_line}\n"
+        f"{tp4_line}\n\n"
+        f"━━━━━━━━━━━━━━━━━\n"
+        f"✅ Required : {req_pass}/{req_total}{failed_str}\n"
+        f"📊 Situational: {sit_pass}/{sit_total}\n"
+        f"⬛ N/A checks : {len(sit_na)}\n"
+        f"⚡ {confidence}\n"
+        f"#SIGNALSYM #{symbol} #{mode_lbl}"
+    )
+    return msg
+
+
+def format_watch_msg(symbol, structure, req_pass, req_total, mode, price):
+    icon = STRUCT_ICONS.get(structure['type'], '📐')
+    return (
+        f"🟡 <b>WATCH — {symbol}</b> ({mode.upper()})\n"
+        f"{icon} {structure['label']}\n\n"
+        f"💵 Price: ${price:,.4f}\n"
+        f"✅ Required: {req_pass}/{req_total}\n"
+        f"⏳ Monitoring every 5 min...\n"
+        f"#SIGNALSYM #{symbol} #WATCH"
+    )
+
+
+def format_tp_alert(symbol, tp_num, price, new_sl):
+    return (
+        f"🎯 <b>TP{tp_num} HIT — {symbol}</b>\n"
+        f"💵 Price: ${price:,.4f}\n"
+        f"🛑 SL moved to: ${new_sl:,.4f}\n"
+        f"#SIGNALSYM #{symbol}"
+    )
+
+
+def format_sl_alert(symbol, price):
+    return (
+        f"🔴 <b>STOP LOSS — {symbol}</b>\n"
+        f"💵 Exited: ${price:,.4f}\n"
+        f"⏳ Waiting for next signal\n"
+        f"#SIGNALSYM #{symbol}"
+    )
+
+
+def format_heartbeat(scans, active, watching):
+    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+    return (
+        f"💓 <b>SIGNALSYM Heartbeat</b>\n"
+        f"🕐 {now}\n"
+        f"🔄 Scans: {scans}\n"
+        f"🟢 Active trades: {active}\n"
+        f"🟡 Watching: {watching}\n"
+        f"✅ Running normally"
+    )
+
+
+# ═════════════════════════════════════════════════════════════
+# SECTION 10 — PRICE MONITOR (TP/SL auto alerts)
+# From session doc: TP1 hit → SL to entry, TP2 → SL to TP1, etc.
+# ═════════════════════════════════════════════════════════════
+
+def check_active_trades():
+    global active_trades
+    to_close = []
+    for symbol, trade in list(active_trades.items()):
+        price = get_current_price(symbol)
+        if price is None:
             continue
-
-        # Parse sym and type from key
-        parts = key.replace("_watch_", "_").split("_")
-        if len(parts) < 2:
+        tp_hit = trade['tp_hit']
+        sl     = trade['sl']
+        tps    = [trade['tp1'], trade['tp2'], trade['tp3'], trade['tp4']]
+        # SL hit
+        if price <= sl:
+            send_telegram(format_sl_alert(symbol, price))
+            to_close.append(symbol)
+            log.info(f"SL hit: {symbol} @ {price}")
             continue
-        sym = parts[0]
-        sig_type = "scalp" if "scalp" in key else "swing"
+        # TP hits
+        for i, tp in enumerate(tps[tp_hit:], start=tp_hit + 1):
+            if price >= tp:
+                new_sl = trade['entry'] if i == 1 else tps[i - 2]
+                trade['sl']     = new_sl
+                trade['tp_hit'] = i
+                send_telegram(format_tp_alert(symbol, i, price, new_sl))
+                log.info(f"TP{i} hit: {symbol} @ {price}, SL → {new_sl}")
+                if i == 4:
+                    to_close.append(symbol)
+                break
+    for sym in to_close:
+        active_trades.pop(sym, None)
 
-        # Find coin in watchlist
-        coin = next((c for c in HALAL_WATCHLIST if c["sym"] == sym), None)
-        if not coin:
-            continue
 
-        try:
-            result = analyze(coin, sig_type)
-            if not result:
+def check_watch_coins():
+    global watch_coins
+    graduated = []
+    for symbol, info in list(watch_coins.items()):
+        result = analyze_coin(symbol, info['mode'])
+        if result and result['status'] == 'SIGNAL':
+            send_telegram(format_signal_msg(
+                symbol, result['structure'], result['levels'],
+                result['req_pass'], result['req_total'], result['req_det'],
+                result['sit_pass'], result['sit_total'], result['sit_det'],
+                result['sit_na'], result['confidence'], info['mode']
+            ))
+            active_trades[symbol] = result['levels']
+            last_signal_time[f"{symbol}_{info['mode']}"] = time.time()
+            graduated.append(symbol)
+            log.info(f"Watch → Signal: {symbol}")
+    for sym in graduated:
+        watch_coins.pop(sym, None)
+
+
+# ═════════════════════════════════════════════════════════════
+# SECTION 11 — COIN ANALYSIS
+# Full pipeline: data → indicators → structure → checklist → levels
+# ═════════════════════════════════════════════════════════════
+
+def analyze_coin(symbol, mode='scalp'):
+    """
+    Full analysis pipeline for one coin.
+
+    1. Fetch 4H/90d (scalp) or 1D/730d (swing) from Binance
+    2. Fetch 1D/100d for daily trend check (Golden Rule)
+    3. Calculate all indicators (RSI, MACD, Stoch, SMI, EWO, Vol)
+    4. Find pivots (adaptive window)
+    5. Recognize which structure this chart shows (5 detectors)
+    6. Run the 10 required + situational checklist
+    7. Build levels (fixed scalp OR structure-based swing)
+    8. Return SIGNAL / WATCH / None
+    """
+    interval = '1d' if mode == 'swing' else '4h'
+    days     = SWING_DAYS if mode == 'swing' else SCALP_DAYS
+
+    data = get_klines(symbol, interval, days)
+    if data is None:
+        return None
+    opens, highs, lows, closes, volumes, times = data
+    current = float(closes[-1])
+
+    # Daily data always needed for Golden Rule trend check
+    daily = get_klines(symbol, '1d', 100)
+    if daily is None:
+        return None
+    closes_1d = daily[3]
+
+    # Indicators
+    rsi             = calc_rsi(closes)
+    _, _, macd_bull = calc_macd(closes)
+    stoch           = calc_stoch(closes, highs, lows)
+    smi             = calc_smi(closes, highs, lows)
+    _, ewo_bull     = calc_ewo(closes)
+    vol_dec, vol_exp = volume_analysis(volumes)
+
+    if rsi is None:
+        return None
+
+    # Pivot detection
+    pivots = find_pivots(highs, lows, window=5)
+    if len(pivots) < 5:
+        return None
+
+    # Structure recognition — the core of the strategy
+    structure = recognize_structure(pivots, current)
+    if structure is None:
+        return None
+
+    # Checklist — exactly per session doc Part 3
+    (req_pass, req_total,
+     sit_pass, sit_total,
+     req_det, sit_det, sit_na) = run_checklist(
+        structure, closes_1d, closes, highs, lows,
+        rsi, macd_bull, stoch, smi, ewo_bull,
+        vol_dec, vol_exp, current
+    )
+
+    confidence = confidence_label(req_pass, req_total, sit_pass, sit_total)
+
+    # Build trade levels
+    levels = build_levels(structure, current, mode)
+
+    # Signal determination (session doc):
+    # All 10 required pass → SIGNAL
+    # 7-9 required pass → WATCH
+    if req_pass == req_total:
+        status = 'SIGNAL'
+    elif req_pass >= 7:
+        status = 'WATCH'
+    else:
+        return None
+
+    return {
+        'status':     status,
+        'structure':  structure,
+        'levels':     levels,
+        'req_pass':   req_pass,
+        'req_total':  req_total,
+        'req_det':    req_det,
+        'sit_pass':   sit_pass,
+        'sit_total':  sit_total,
+        'sit_det':    sit_det,
+        'sit_na':     sit_na,
+        'confidence': confidence,
+        'current':    current,
+    }
+
+
+# ═════════════════════════════════════════════════════════════
+# SECTION 12 — MAIN SCAN LOOP
+# 75 halal coins | 15 min interval | 1s between coins
+# Swing cooldown 4h | Scalp cooldown 2h
+# Watch re-checked every 5 min
+# Heartbeat every 24h
+# ═════════════════════════════════════════════════════════════
+
+def should_scan(symbol, mode):
+    key      = f"{symbol}_{mode}"
+    cooldown = SWING_COOLDOWN if mode == 'swing' else SCALP_COOLDOWN
+    return (time.time() - last_signal_time.get(key, 0)) > cooldown
+
+
+def run_scan():
+    global scan_count
+    scan_count += 1
+    log.info(f"── Scan #{scan_count} | {len(HALAL_COINS)} coins ──")
+    t0 = time.time()
+
+    for symbol in HALAL_COINS:
+        for mode in ['scalp', 'swing']:
+            if not should_scan(symbol, mode):
                 continue
-
-            # If it graduated from watch to full signal
-            if not result.get("watch"):
-                signal_key = sym + "_" + sig_type
-                last_sig = sent_signals.get(signal_key, 0)
-                if now - last_sig < (14400 if sig_type=="swing" else 7200):
+            try:
+                result = analyze_coin(symbol, mode)
+                if result is None:
                     continue
 
-                print(f"  \U0001f7e2 WATCH->SIGNAL: {sym} {sig_type.upper()} {result['score']}/{result['max']}")
-                send_msg(build_msg(result))
-                sent_signals[signal_key] = now
+                key    = f"{symbol}_{mode}"
+                status = result['status']
 
-                # Track trade
-                trade_key = sym + "_" + sig_type
-                active_trades[trade_key] = {
-                    "sym": sym, "type": sig_type.upper(),
-                    "entry": result["current"],
-                    "sl": result["sl"], "tp1": result["tp1"],
-                    "tp2": result["tp2"], "tp3": result["tp3"],
-                    "tp4": result["tp4"],
-                    "hit_tp1": False, "hit_tp2": False,
-                    "hit_tp3": False, "hit_tp4": False,
-                    "closed": False, "time": now
-                }
-        except Exception as e:
-            print(f"  Watch monitor error {sym}: {e}")
-        time.sleep(2)
+                if status == 'SIGNAL':
+                    msg = format_signal_msg(
+                        symbol, result['structure'], result['levels'],
+                        result['req_pass'], result['req_total'], result['req_det'],
+                        result['sit_pass'], result['sit_total'], result['sit_det'],
+                        result['sit_na'], result['confidence'], mode
+                    )
+                    send_telegram(msg)
+                    active_trades[symbol] = result['levels']
+                    last_signal_time[key] = time.time()
+                    watch_coins.pop(symbol, None)
+                    log.info(
+                        f"SIGNAL {symbol} {mode} "
+                        f"{result['structure']['type']} "
+                        f"req:{result['req_pass']}/{result['req_total']} "
+                        f"sit:{result['sit_pass']}/{result['sit_total']}"
+                    )
 
-# ── PRICE ALERT MONITOR ──────────────────────────────────────
-def check_price_alerts():
-    """Check all active trades for TP/SL hits every 5 minutes"""
-    if not active_trades:
-        return
-
-    SEP = "\u2501" * 19
-
-    for key, trade in list(active_trades.items()):
-        if trade.get("closed"):
-            continue
-
-        sym = trade["sym"]
-        sig_type = trade["type"]
-        icon = "\u26a1" if sig_type == "SCALP" else "\U0001f4c8"
-
-        try:
-            prices, _ = fetch_klines(sym, "1m", 2)
-            if not prices:
-                continue
-            current = prices[-1]
-        except:
-            continue
-
-        entry = trade["entry"]
-        sl    = trade["sl"]
-        tp1   = trade["tp1"]
-        tp2   = trade["tp2"]
-        tp3   = trade["tp3"]
-        tp4   = trade["tp4"]
-
-        # SL hit
-        if current <= sl and not trade.get("closed"):
-            loss = (current-entry)/entry*100
-            msg = (
-                "\U0001f534 <b>STOP LOSS HIT - " + sym + "/USDT</b>\n" +
-                SEP + "\n" +
-                icon + " " + sig_type + " Signal Closed\n" +
-                "\U0001f4c9 Price: " + fp(current) + "\n" +
-                "\U0001f534 SL: " + fp(sl) + "\n" +
-                "\U0001f4ca Entry was: " + fp(entry) + "\n" +
-                "\U0001f4b8 Loss: " + f"{loss:.1f}%" + "\n" +
-                SEP + "\n" +
-                "<i>Exit full position. Wait for next signal.</i>"
-            )
-            send_msg(msg)
-            active_trades[key]["closed"] = True
-            continue
-
-        # TP1 hit
-        if current >= tp1 and not trade.get("hit_tp1"):
-            profit = (current-entry)/entry*100
-            msg = (
-                "\U0001f3af <b>TP1 HIT - " + sym + "/USDT</b>\n" +
-                SEP + "\n" +
-                icon + " " + sig_type + " Signal\n" +
-                "\U0001f4b0 Price: " + fp(current) + "\n" +
-                "\u2705 TP1: " + fp(tp1) + " reached\n" +
-                "\U0001f4ca Profit: +" + f"{profit:.1f}%" + "\n" +
-                SEP + "\n" +
-                "\U0001f449 Exit 25% of position\n" +
-                "\U0001f3af Next target: TP2 " + fp(tp2) + "\n" +
-                "\U0001f534 Move SL to entry: " + fp(entry)
-            )
-            send_msg(msg)
-            active_trades[key]["hit_tp1"] = True
-            active_trades[key]["sl"] = entry
-
-        # TP2 hit
-        if current >= tp2 and not trade.get("hit_tp2"):
-            profit = (current-entry)/entry*100
-            msg = (
-                "\U0001f3af <b>TP2 HIT - " + sym + "/USDT</b>\n" +
-                SEP + "\n" +
-                icon + " " + sig_type + " Signal\n" +
-                "\U0001f4b0 Price: " + fp(current) + "\n" +
-                "\u2705 TP2: " + fp(tp2) + " reached\n" +
-                "\U0001f4ca Profit: +" + f"{profit:.1f}%" + "\n" +
-                SEP + "\n" +
-                "\U0001f449 Exit 25% of position\n" +
-                "\U0001f3af Next target: TP3 " + fp(tp3) + "\n" +
-                "\U0001f534 Move SL to TP1: " + fp(tp1)
-            )
-            send_msg(msg)
-            active_trades[key]["hit_tp2"] = True
-            active_trades[key]["sl"] = tp1
-
-        # TP3 hit
-        if current >= tp3 and not trade.get("hit_tp3"):
-            profit = (current-entry)/entry*100
-            msg = (
-                "\U0001f3af <b>TP3 HIT - " + sym + "/USDT</b>\n" +
-                SEP + "\n" +
-                icon + " " + sig_type + " Signal\n" +
-                "\U0001f4b0 Price: " + fp(current) + "\n" +
-                "\u2705 TP3: " + fp(tp3) + " reached\n" +
-                "\U0001f4ca Profit: +" + f"{profit:.1f}%" + "\n" +
-                SEP + "\n" +
-                "\U0001f449 Exit 25% of position\n" +
-                "\U0001f3af Final target: TP4 " + fp(tp4) + "\n" +
-                "\U0001f534 Move SL to TP2: " + fp(tp2)
-            )
-            send_msg(msg)
-            active_trades[key]["hit_tp3"] = True
-            active_trades[key]["sl"] = tp2
-
-        # TP4 hit
-        if current >= tp4 and not trade.get("hit_tp4"):
-            profit = (current-entry)/entry*100
-            msg = (
-                "\U0001f3c6 <b>TP4 HIT - " + sym + "/USDT</b>\n" +
-                SEP + "\n" +
-                icon + " " + sig_type + " Signal COMPLETE\n" +
-                "\U0001f4b0 Price: " + fp(current) + "\n" +
-                "\u2705 TP4: " + fp(tp4) + " reached\n" +
-                "\U0001f4ca Full profit: +" + f"{profit:.1f}%" + "\n" +
-                SEP + "\n" +
-                "\U0001f449 Exit remaining position\n" +
-                "\U0001f389 Trade complete! \u0627\u0644\u062d\u0645\u062f \u0644\u0644\u0647 \U0001f91f"
-            )
-            send_msg(msg)
-            active_trades[key]["hit_tp4"] = True
-            active_trades[key]["closed"] = True
-
-
-# ── MAIN LOOP ─────────────────────────────────────────────────
-def main():
-    global scan_count
-    total=len(HALAL_WATCHLIST)
-    t1=[c["sym"] for c in HALAL_WATCHLIST if c["tier"]==1]
-    t2=[c["sym"] for c in HALAL_WATCHLIST if c["tier"]==2]
-    t3=[c["sym"] for c in HALAL_WATCHLIST if c["tier"]==3]
-
-    print(f"🕌 SIGNALSYM Bot V3 - Binance API")
-    print(f"📊 {total} halal coins | FREE & UNLIMITED")
-
-    send_msg(
-        f"🕌 <b>SIGNALSYM Bot V3 - Active</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"✅ Shariah-Compliant Coins Only\n"
-        f"🔄 Powered by Binance API\n"
-        f"💰 FREE · UNLIMITED · NO KEY NEEDED\n"
-        f"📊 {total} coins monitored\n"
-        f"⏱ Scanning every 15 minutes\n"
-        f"📈 Swing + ⚡ Scalp signals\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"⭐⭐⭐ T1 ({len(t1)}): {', '.join(t1[:8])}...\n"
-        f"⭐⭐ T2 ({len(t2)}): {', '.join(t2[:8])}...\n"
-        f"⭐ T3 ({len(t3)}): {', '.join(t3[:8])}...\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"بارك الله فيك 🤲"
-    )
-
-    while True:
-        scan_count+=1
-        now=datetime.now().strftime("%H:%M:%S")
-        print(f"\n[{now}] Scan #{scan_count}")
-        signals=0
-
-        for coin in HALAL_WATCHLIST:
-            sym=coin["sym"]
-            print(f"  {sym}...",end=" ",flush=True)
-            try:
-                # SWING
-                swing_key = sym+"_swing"
-                watch_key = sym+"_watch_swing"
-                sw = analyze(coin,"swing")
-                if sw:
-                    if sw.get("watch"):
-                        # WATCH alert
-                        last_w = sent_watches.get(watch_key, 0)
-                        if time.time()-last_w < 7200:  # 2hr cooldown for watches
-                            print("W(cd)",end=" ")
-                        else:
-                            print(f"\U0001f7e1W{sw['score']}/{sw['max']}",end=" ")
-                            send_msg(build_watch_msg(
-                                sym,"SWING",sw["current"],sw["score"],sw["max"],
-                                sw["checks"],sw["rsi"],sw["stoch"],sw["entry"],sw["reason"]
-                            ))
-                            sent_watches[watch_key] = time.time()
-                    else:
-                        # FULL signal
-                        last = sent_signals.get(swing_key, 0)
-                        if time.time()-last < 14400:
-                            print("S(cd)",end=" ")
-                        else:
-                            print(f"\U0001f4c8{sw['score']}/{sw['max']}",end=" ")
-                            send_msg(build_msg(sw))
-                            sent_signals[swing_key] = time.time()
-                            signals += 1
-                            active_trades[swing_key] = {
-                                "sym":sym,"type":"SWING",
-                                "entry":sw["current"],
-                                "sl":sw["sl"],"tp1":sw["tp1"],
-                                "tp2":sw["tp2"],"tp3":sw["tp3"],"tp4":sw["tp4"],
-                                "hit_tp1":False,"hit_tp2":False,
-                                "hit_tp3":False,"hit_tp4":False,
-                                "closed":False,"time":time.time()
-                            }
-                            time.sleep(2)
-                else:
-                    print("-",end=" ")
-
-                # SCALP
-                scalp_key = sym+"_scalp"
-                watch_key_sc = sym+"_watch_scalp"
-                sc = analyze(coin,"scalp")
-                if sc:
-                    if sc.get("watch"):
-                        # WATCH alert
-                        last_w = sent_watches.get(watch_key_sc, 0)
-                        if time.time()-last_w < 3600:  # 1hr cooldown for scalp watches
-                            print("WS(cd)")
-                        else:
-                            print(f"\U0001f7e1SC{sc['score']}/{sc['max']}")
-                            send_msg(build_watch_msg(
-                                sym,"SCALP",sc["current"],sc["score"],sc["max"],
-                                sc["checks"],sc["rsi"],sc["stoch"],sc["entry"],sc["reason"]
-                            ))
-                            sent_watches[watch_key_sc] = time.time()
-                    else:
-                        # FULL signal
-                        last = sent_signals.get(scalp_key, 0)
-                        if time.time()-last < 7200:
-                            print("SC(cd)")
-                        else:
-                            print(f"\u26a1{sc['score']}/{sc['max']}")
-                            send_msg(build_msg(sc))
-                            sent_signals[scalp_key] = time.time()
-                            signals += 1
-                            active_trades[scalp_key] = {
-                                "sym":sym,"type":"SCALP",
-                                "entry":sc["current"],
-                                "sl":sc["sl"],"tp1":sc["tp1"],
-                                "tp2":sc["tp2"],"tp3":sc["tp3"],"tp4":sc["tp4"],
-                                "hit_tp1":False,"hit_tp2":False,
-                                "hit_tp3":False,"hit_tp4":False,
-                                "closed":False,"time":time.time()
-                            }
-                            time.sleep(2)
-                else:
-                    print("–")
-
-                time.sleep(1)  # 1 second between coins
+                elif status == 'WATCH':
+                    watch_key  = f"{symbol}_{mode}_watch"
+                    wc         = WATCH_COOLDOWN_SWING if mode == 'swing' else WATCH_COOLDOWN_SCALP
+                    if (time.time() - last_signal_time.get(watch_key, 0)) > wc:
+                        msg = format_watch_msg(
+                            symbol, result['structure'],
+                            result['req_pass'], result['req_total'],
+                            mode, result['current']
+                        )
+                        send_telegram(msg)
+                        watch_coins[symbol] = {'mode': mode, 'ts': time.time()}
+                        last_signal_time[watch_key] = time.time()
+                        log.info(
+                            f"WATCH {symbol} {mode} "
+                            f"{result['structure']['type']} "
+                            f"req:{result['req_pass']}/{result['req_total']}"
+                        )
 
             except Exception as e:
-                print(f"err:{e}")
-                time.sleep(5)
+                log.error(f"Error {symbol} {mode}: {e}", exc_info=True)
 
-        print(f"\n✅ Scan #{scan_count} - {signals} signal(s) - next in 15min")
+        time.sleep(COIN_SLEEP)
 
-        # Monitor every 5 minutes during 15min wait
-        active_count = len([t for t in active_trades.values() if not t.get('closed')])
-        watch_count  = len(sent_watches)
-        print(f"  📊 Active trades: {active_count} | Watch coins: {watch_count}")
+    log.info(f"── Scan #{scan_count} done in {time.time()-t0:.1f}s ──")
 
-        for cycle in range(3):  # 3 x 5min = 15min total
-            time.sleep(300)
-            # Check TP/SL on active trades
-            check_price_alerts()
-            # Fast-check watch coins for signal graduation
-            if sent_watches:
-                print(f"  🔍 Fast-checking {len(sent_watches)} watch coins...")
-                monitor_watch_coins()
-        return
+    if scan_count % HEARTBEAT_SCANS == 0:
+        send_telegram(format_heartbeat(
+            scan_count, len(active_trades), len(watch_coins)
+        ))
 
-        if scan_count%96==0:
-            send_msg(
-                f"💓 <b>Heartbeat</b>\n"
-                f"Scans: {scan_count}\n"
-                f"Coins: {total}\n"
-                f"API: Binance (unlimited)\n"
-                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M')} UTC\n"
-                f"الحمد لله 🤲"
-            )
 
-        # time.sleep(900) -- handled above in monitor loop
+def main():
+    log.info("SIGNALSYM starting...")
+    send_telegram(
+        "🤖 <b>SIGNALSYM Started</b>\n\n"
+        "<b>Strategy: Your Fixed Wave Structure</b>\n"
+        "Grand W3 unfolding | W2 of W3 near complete\n\n"
+        "<b>Structures detected per chart:</b>\n"
+        "📊 Standard EW — W2 or W4 entry\n"
+        "〽️ ABC Zigzag — C=A correction\n"
+        "📐 Expanded Flat — B exceeds W5\n"
+        "🚀 Running Correction — higher low\n"
+        "🔁 W-X-Y-X-Z — X1=X2 confirmed\n\n"
+        "<b>Levels:</b>\n"
+        "Scalp: TP3/5/8/10% | SL -5% (fixed)\n"
+        "Swing: Structure wave levels | SL 2% below low\n\n"
+        "✅ 75 halal coins | Binance | Every 15 min"
+    )
 
-if __name__=="__main__":
+    last_price_check = 0
+    while True:
+        try:
+            now = time.time()
+            if (now - last_price_check) >= PRICE_MONITOR_INTERVAL:
+                if active_trades:
+                    check_active_trades()
+                if watch_coins:
+                    check_watch_coins()
+                last_price_check = time.time()
+            run_scan()
+            time.sleep(SCAN_INTERVAL)
+        except KeyboardInterrupt:
+            log.info("Bot stopped.")
+            break
+        except Exception as e:
+            log.error(f"Main loop error: {e}", exc_info=True)
+            time.sleep(60)
+
+
+if __name__ == "__main__":
     main()
