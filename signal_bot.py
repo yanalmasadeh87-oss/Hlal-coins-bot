@@ -185,19 +185,105 @@ def validate_ew(pivots):
         issues.append("W4 overlaps W1")
     return len(issues)==0, issues
 
-def detect_entry(pivots):
+def detect_entry(pivots, prices=None, rsi_val=50):
     if len(pivots)<3: return "",0
+    
+    # Check W2 bottom
     w1r=abs(pivots[1]["price"]-pivots[0]["price"])
     if w1r>0:
         w2r=abs(pivots[2]["price"]-pivots[1]["price"])/w1r*100
         if 38<=w2r<=100: return "W2",w2r
+    
+    # Check W4 bottom
     if len(pivots)>=5:
         w3r=abs(pivots[3]["price"]-pivots[2]["price"])
         if w3r>0:
             w4r=abs(pivots[4]["price"]-pivots[3]["price"])/w3r*100
             if 23<=w4r<=38 and pivots[4]["price"]>pivots[1]["price"]:
                 return "W4",w4r
+    
+    # Check Wave C bottom (ABC correction complete)
+    if prices and len(pivots)>=4:
+        is_c,label,ret = detect_wave_c_bottom(pivots, prices, rsi_val)
+        if is_c:
+            return "Wave C", ret
+    
     return "",0
+
+def detect_wave_c_bottom(pivots, prices, rsi_val):
+    """
+    Detect Wave C bottom of ABC correction.
+    This is a HIGH-PROBABILITY entry point — start of new impulse.
+    
+    Structure needed:
+    W1 up → W2 down → W3 up → W4 down → W5 up → Wave A down → Wave B up → Wave C down
+    Wave C should:
+    - Drop below Wave A low (or equal)
+    - RSI divergence: price lower than Wave A, RSI higher (bullish divergence)
+    - Stochastic oversold
+    - Volume declining into Wave C
+    """
+    if len(pivots) < 6:
+        return False, "", 0
+
+    # Need at least 6 pivots to identify ABC after impulse
+    # Look for pattern: peak → trough (Wave A) → peak (Wave B) → trough (Wave C)
+    # Find the most recent ABC structure
+    
+    # Scan from end backwards to find ABC
+    n = len(pivots)
+    
+    # Check last 3-4 pivots for ABC pattern
+    if n >= 4:
+        # Most recent: potential Wave C trough
+        last = pivots[n-1]
+        prev = pivots[n-2]  # Wave B peak
+        prev2 = pivots[n-3]  # Wave A trough
+        prev3 = pivots[n-4]  # Wave 5 peak (impulse top)
+        
+        # Wave C bottom criteria:
+        # 1. Last pivot is a trough (bottom)
+        # 2. prev is a peak (Wave B)
+        # 3. prev2 is a trough (Wave A)
+        # 4. prev3 is a peak (Wave 5 top)
+        
+        is_wave_c = (
+            last["type"] in ["trough", "current"] and
+            prev["type"] == "peak" and
+            prev2["type"] == "trough" and
+            prev3["type"] == "peak"
+        )
+        
+        if is_wave_c:
+            wave_a_low = prev2["price"]
+            wave_b_high = prev["price"]
+            wave_c_low = last["price"]
+            wave5_high = prev3["price"]
+            
+            # Wave C must be below Wave B
+            c_below_b = wave_c_low < wave_b_high
+            
+            # Wave B should retrace 38-78% of Wave A
+            wave_a_size = abs(wave5_high - wave_a_low)
+            wave_b_ret = (wave_b_high - wave_a_low) / wave_a_size * 100 if wave_a_size > 0 else 0
+            b_retrace_ok = 38 <= wave_b_ret <= 78
+            
+            # Wave C should be near or below Wave A low
+            c_near_a = wave_c_low <= wave_a_low * 1.05  # Within 5% of Wave A low
+            
+            # RSI at Wave C should be oversold
+            rsi_oversold = rsi_val < 45
+            
+            # Current price near Wave C bottom (within 5%)
+            current = prices[-1]
+            near_bottom = current <= wave_c_low * 1.08  # Within 8% of C bottom
+            
+            if c_below_b and near_bottom and (c_near_a or rsi_oversold):
+                # Calculate retrace for reference
+                abc_size = abs(wave5_high - wave_c_low)
+                return True, "Wave C", wave_b_ret
+    
+    return False, "", 0
 
 def check_alternation(pivots):
     if len(pivots)<5: return False,"Need W4"
@@ -297,14 +383,14 @@ def analyze(coin, signal_type="swing"):
         prices,vols = fetch_klines(sym,"1d",730)
         min_move=0.10
         sl_pct=SWING_SL; tp1=SWING_TP1; tp2=SWING_TP2; tp3=SWING_TP3; tp4=SWING_TP4
-        min_score=12; max_score=22
+        min_score=12; max_score=23
         hold="Days to weeks"
     else:
         # Scalp: use 4h data for better wave detection
         prices,vols = fetch_klines(sym,"4h",540)  # 90 days of 4H
         min_move=0.05
         sl_pct=SCALP_SL; tp1=SCALP_TP1; tp2=SCALP_TP2; tp3=SCALP_TP3; tp4=SCALP_TP4
-        min_score=8; max_score=12
+        min_score=7; max_score=13
         hold="1-3 days (4H trade)"
 
     if len(prices)<50: return None
@@ -324,7 +410,7 @@ def analyze(coin, signal_type="swing"):
     # Waves
     pivots=detect_pivots(prices,min_move)
     ew_ok,ew_issues=validate_ew(pivots)
-    entry,w_ret=detect_entry(pivots)
+    entry,w_ret=detect_entry(pivots, prices, rsi_val)
     alt_ok,alt_note=check_alternation(pivots)
     candle_name,candle_bull=detect_candlestick(prices)
     diagonal=detect_diagonal(pivots,prices) if len(pivots)>=5 else False
@@ -349,6 +435,7 @@ def analyze(coin, signal_type="swing"):
             "wave_count":    len(pivots)>=5,
             "ew_valid":      ew_ok,
             "entry_zone":    entry!="",
+            "wave_c_bottom": entry=="Wave C",  # Wave C = high probability entry
             "price_level":   pct_ath<-40,
             "deep_level":    pct_ath<-60,
             "fib_level":     -80<pct_ath<-38,
@@ -368,11 +455,14 @@ def analyze(coin, signal_type="swing"):
             "no_trunc_w5":   not trunc,
         }
     else:
+        # For scalp — Wave C bottom is a PRIMARY entry signal
+        wave_c_entry = entry == "Wave C"
         checks={
             "daily_bull":    daily_bull,
             "wave_count":    len(pivots)>=4,
-            "ew_valid":      ew_ok,
+            "ew_valid":      ew_ok or wave_c_entry,  # Wave C valid even if EW rules not perfect
             "entry_zone":    entry!="",
+            "wave_c_bottom": wave_c_entry,  # Bonus point for Wave C detection
             "rsi_ok":        rsi_val<50,
             "stoch_ok":      stoch<30,
             "macd_ok":       macd_cross or macd_turn,
