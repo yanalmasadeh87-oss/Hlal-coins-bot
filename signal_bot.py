@@ -853,10 +853,10 @@ def analyze(coin, signal_type="swing"):
 
     # Full signal qualifications
     if score < min_score: return None
-    # Swing requires bullish daily trend
-    if signal_type=="swing" and not daily_bull: return None
-    # At least one momentum indicator must confirm
-    if not(checks.get("rsi_ok") or checks.get("stoch_ok") or checks.get("macd_ok") or checks.get("wave_c_bottom")):
+    # Both modes require bullish daily trend
+    if not daily_bull: return None
+    # Momentum must confirm — RSI or Stoch or MACD required
+    if not(checks.get("rsi_ok") or checks.get("stoch_ok") or checks.get("macd_ok")):
         return None
 
     # Levels
