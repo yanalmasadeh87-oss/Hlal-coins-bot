@@ -60,6 +60,7 @@ HALAL_WATCHLIST = [
 ]
 
 sent_signals = {}
+sent_watches = {}  # Track watch alerts separately
 scan_count = 0
 
 # Track active trades for TP/SL monitoring
@@ -474,11 +475,39 @@ def analyze(coin, signal_type="swing"):
         }
 
     score=sum(checks.values())
+    watch_min = max(4, int(min_score*0.60))  # 60% of min score = watch alert
 
-    # Qualifications
-    if score<min_score: return None
+    # Block bad setups always
     if diagonal: return None
-    if trunc: return None  # Never enter on truncated W5
+    if trunc: return None
+
+    # WATCH alert — close but not ready
+    if watch_min <= score < min_score:
+        missing = []
+        if not checks.get("rsi_ok"):    missing.append("RSI not oversold")
+        if not checks.get("stoch_ok"):  missing.append("Stoch not oversold")
+        if not checks.get("macd_ok"):   missing.append("MACD not bullish")
+        if not checks.get("entry_zone"):missing.append("No entry zone")
+        if not checks.get("daily_bull"):missing.append("Daily not bullish")
+        if signal_type=="swing" and not checks.get("price_level"):
+            missing.append("Price not -40% from ATH")
+        reason = " | ".join(missing[:3]) if missing else "Setup developing"
+        return {
+            "watch":   True,
+            "type":    signal_type.upper(),
+            "sym":     sym,
+            "current": current,
+            "score":   score,
+            "max":     min_score,
+            "rsi":     rsi_val,
+            "stoch":   stoch,
+            "entry":   entry,
+            "checks":  checks,
+            "reason":  reason,
+        }
+
+    # Full signal qualifications
+    if score < min_score: return None
     if not daily_bull and signal_type=="swing": return None
     if not(checks.get("rsi_ok") or checks.get("stoch_ok") or checks.get("macd_ok")):
         return None
@@ -522,6 +551,27 @@ def fp(p):
     if p>=1: return f"${p:.4f}"
     if p>=0.01: return f"${p:.5f}"
     return f"${p:.7f}"
+
+def build_watch_msg(sym, sig_type, current, score, max_score, checks, rsi, stoch, entry, reason):
+    SEP = "\u2501" * 19
+    icon = "\u26a1" if sig_type == "SCALP" else "\U0001f4c8"
+    passing = [k for k,v in checks.items() if v]
+    failing = [k for k,v in checks.items() if not v]
+    return (
+        "\U0001f7e1 <b>WATCH ALERT - " + sym + "/USDT</b>\n" +
+        SEP + "\n" +
+        icon + " " + sig_type + " Setup Developing\n" +
+        "\U0001f4b0 Price: " + fp(current) + "\n" +
+        "\U0001f4ca Score: " + str(score) + "/" + str(max_score) + " (need " + str(int(max_score*0.55)) + "+)\n" +
+        SEP + "\n" +
+        "\u2705 Passing: " + str(len(passing)) + " checks\n" +
+        "\u274c Missing: " + str(len(failing)) + " checks\n" +
+        "\U0001f4c9 RSI: " + f"{rsi:.0f}" + " | Stoch: " + f"{stoch:.0f}" + "\n" +
+        ("\U0001f3af Entry Zone: " + entry + "\n" if entry else "") +
+        "\u26a0\ufe0f Reason: " + reason + "\n" +
+        SEP + "\n" +
+        "<i>Not a signal yet. Monitor closely.</i>"
+    )
 
 def build_msg(sig):
     icon="⚡" if sig["type"]=="SCALP" else "📈"
@@ -710,57 +760,83 @@ def main():
             print(f"  {sym}...",end=" ",flush=True)
             try:
                 # SWING
-                swing_key=sym+"_swing"
-                sw=analyze(coin,"swing")
+                swing_key = sym+"_swing"
+                watch_key = sym+"_watch_swing"
+                sw = analyze(coin,"swing")
                 if sw:
-                    last=sent_signals.get(swing_key,0)
-                    if time.time()-last<14400:
-                        print("S(cd)",end=" ")
+                    if sw.get("watch"):
+                        # WATCH alert
+                        last_w = sent_watches.get(watch_key, 0)
+                        if time.time()-last_w < 7200:  # 2hr cooldown for watches
+                            print("W(cd)",end=" ")
+                        else:
+                            print(f"\U0001f7e1W{sw['score']}/{sw['max']}",end=" ")
+                            send_msg(build_watch_msg(
+                                sym,"SWING",sw["current"],sw["score"],sw["max"],
+                                sw["checks"],sw["rsi"],sw["stoch"],sw["entry"],sw["reason"]
+                            ))
+                            sent_watches[watch_key] = time.time()
                     else:
-                        print(f"📈{sw['score']}/{sw['max']}",end=" ")
-                        send_msg(build_msg(sw))
-                        sent_signals[swing_key]=time.time()
-                        signals+=1
-                        # Track trade for TP/SL alerts
-                        active_trades[swing_key] = {
-                            "sym": sym, "type": "SWING",
-                            "entry": sw["current"],
-                            "sl": sw["sl"], "tp1": sw["tp1"],
-                            "tp2": sw["tp2"], "tp3": sw["tp3"],
-                            "tp4": sw["tp4"],
-                            "hit_tp1": False, "hit_tp2": False,
-                            "hit_tp3": False, "hit_tp4": False,
-                            "closed": False,
-                            "time": time.time()
-                        }
-                        time.sleep(2)
+                        # FULL signal
+                        last = sent_signals.get(swing_key, 0)
+                        if time.time()-last < 14400:
+                            print("S(cd)",end=" ")
+                        else:
+                            print(f"\U0001f4c8{sw['score']}/{sw['max']}",end=" ")
+                            send_msg(build_msg(sw))
+                            sent_signals[swing_key] = time.time()
+                            signals += 1
+                            active_trades[swing_key] = {
+                                "sym":sym,"type":"SWING",
+                                "entry":sw["current"],
+                                "sl":sw["sl"],"tp1":sw["tp1"],
+                                "tp2":sw["tp2"],"tp3":sw["tp3"],"tp4":sw["tp4"],
+                                "hit_tp1":False,"hit_tp2":False,
+                                "hit_tp3":False,"hit_tp4":False,
+                                "closed":False,"time":time.time()
+                            }
+                            time.sleep(2)
+                else:
+                    print("-",end=" ")
 
                 # SCALP
-                scalp_key=sym+"_scalp"
+                scalp_key = sym+"_scalp"
+                watch_key_sc = sym+"_watch_scalp"
                 time.sleep(2)
-                sc=analyze(coin,"scalp")
+                sc = analyze(coin,"scalp")
                 if sc:
-                    last=sent_signals.get(scalp_key,0)
-                    if time.time()-last<7200:
-                        print("SC(cd)")
+                    if sc.get("watch"):
+                        # WATCH alert
+                        last_w = sent_watches.get(watch_key_sc, 0)
+                        if time.time()-last_w < 3600:  # 1hr cooldown for scalp watches
+                            print("WS(cd)")
+                        else:
+                            print(f"\U0001f7e1SC{sc['score']}/{sc['max']}")
+                            send_msg(build_watch_msg(
+                                sym,"SCALP",sc["current"],sc["score"],sc["max"],
+                                sc["checks"],sc["rsi"],sc["stoch"],sc["entry"],sc["reason"]
+                            ))
+                            sent_watches[watch_key_sc] = time.time()
                     else:
-                        print(f"⚡{sc['score']}/{sc['max']}")
-                        send_msg(build_msg(sc))
-                        sent_signals[scalp_key]=time.time()
-                        signals+=1
-                        # Track trade for TP/SL alerts
-                        active_trades[scalp_key] = {
-                            "sym": sym, "type": "SCALP",
-                            "entry": sc["current"],
-                            "sl": sc["sl"], "tp1": sc["tp1"],
-                            "tp2": sc["tp2"], "tp3": sc["tp3"],
-                            "tp4": sc["tp4"],
-                            "hit_tp1": False, "hit_tp2": False,
-                            "hit_tp3": False, "hit_tp4": False,
-                            "closed": False,
-                            "time": time.time()
-                        }
-                        time.sleep(2)
+                        # FULL signal
+                        last = sent_signals.get(scalp_key, 0)
+                        if time.time()-last < 7200:
+                            print("SC(cd)")
+                        else:
+                            print(f"\u26a1{sc['score']}/{sc['max']}")
+                            send_msg(build_msg(sc))
+                            sent_signals[scalp_key] = time.time()
+                            signals += 1
+                            active_trades[scalp_key] = {
+                                "sym":sym,"type":"SCALP",
+                                "entry":sc["current"],
+                                "sl":sc["sl"],"tp1":sc["tp1"],
+                                "tp2":sc["tp2"],"tp3":sc["tp3"],"tp4":sc["tp4"],
+                                "hit_tp1":False,"hit_tp2":False,
+                                "hit_tp3":False,"hit_tp4":False,
+                                "closed":False,"time":time.time()
+                            }
+                            time.sleep(2)
                 else:
                     print("–")
 
