@@ -376,6 +376,127 @@ def detect_truncated_w5(pivots, prices):
         return True, "⚠️ Truncated W5 — Reversal imminent — DO NOT ENTER"
     return False, "No truncation"
 
+
+# ── WAVE C BOTTOM DETECTOR ────────────────────────────────────
+def detect_wave_c_bottom(pivots, prices, current):
+    """
+    Detect ABC correction Wave C completion.
+    Wave C bottom = Fibonacci 0.618-1.0 of Wave A from Wave B top.
+    This is the highest probability entry in a correction.
+    """
+    if len(pivots) < 5:
+        return False, 0
+
+    # Look for ABC pattern in last 5 pivots
+    # Pattern: impulse top (A start) -> drop (A) -> bounce (B) -> drop (C)
+    for i in range(len(pivots)-4, -1, -1):
+        if i+4 >= len(pivots):
+            continue
+        p0 = pivots[i]     # Before A
+        p1 = pivots[i+1]   # Wave A top (if bullish before)
+        p2 = pivots[i+2]   # Wave A bottom
+        p3 = pivots[i+3]   # Wave B top
+        p4 = pivots[i+4]   # Wave C bottom (current?)
+
+        # Valid ABC: p1=peak, p2=trough, p3=peak, p4=trough
+        if not(p1["type"]=="peak" and p2["type"]=="trough" and
+               p3["type"]=="peak" and p4["type"]=="trough"):
+            continue
+
+        wave_a = abs(p1["price"] - p2["price"])
+        wave_b = abs(p3["price"] - p2["price"])
+        wave_c = abs(p3["price"] - p4["price"])
+
+        if wave_a == 0:
+            continue
+
+        # Wave B should retrace 38-78% of Wave A
+        b_ret = wave_b / wave_a * 100
+        if not (38 <= b_ret <= 100):
+            continue
+
+        # Wave C should be 61.8% to 161.8% of Wave A
+        c_ratio = wave_c / wave_a * 100
+        if not (50 <= c_ratio <= 170):
+            continue
+
+        # Current price should be near Wave C bottom
+        c_bottom = p4["price"]
+        proximity = abs(current - c_bottom) / c_bottom * 100
+
+        if proximity <= 5:  # Within 5% of Wave C bottom
+            return True, c_ratio
+
+    return False, 0
+
+
+# ── FIBONACCI W1 RETRACE CALCULATOR ─────────────────────────
+def calc_fib_retrace(pivots):
+    """
+    Calculate actual W2 retracement of W1.
+    This is the professional EW entry standard.
+    Returns (retrace_pct, is_valid_fib, fib_level)
+    """
+    if len(pivots) < 3:
+        return 0, False, ""
+
+    w1_start = pivots[0]["price"]
+    w1_end   = pivots[1]["price"]
+    w2_end   = pivots[2]["price"]
+
+    w1_range = abs(w1_end - w1_start)
+    if w1_range == 0:
+        return 0, False, ""
+
+    w2_range  = abs(w2_end - w1_end)
+    retrace   = (w2_range / w1_range) * 100
+
+    # Professional Fibonacci levels
+    if retrace < 38.2:
+        fib_label = "Shallow (<38.2%)"
+        valid = False
+    elif retrace <= 50.0:
+        fib_label = "0.382 Fib Zone"
+        valid = True
+    elif retrace <= 61.8:
+        fib_label = "0.500 Fib Zone"
+        valid = True
+    elif retrace <= 78.6:
+        fib_label = "0.618 Golden Ratio"
+        valid = True
+    elif retrace <= 100:
+        fib_label = "0.786 Deep Fib"
+        valid = True
+    else:
+        fib_label = "W2 > 100% W1 (Invalid)"
+        valid = False
+
+    return retrace, valid, fib_label
+
+def calc_w4_fib_retrace(pivots):
+    """
+    Calculate W4 retracement of W3.
+    Valid W4: 23.6% to 50% of W3.
+    """
+    if len(pivots) < 5:
+        return 0, False, ""
+
+    w3_start = pivots[2]["price"]
+    w3_end   = pivots[3]["price"]
+    w4_end   = pivots[4]["price"]
+
+    w3_range = abs(w3_end - w3_start)
+    if w3_range == 0:
+        return 0, False, ""
+
+    w4_range = abs(w4_end - w3_end)
+    retrace  = (w4_range / w3_range) * 100
+
+    if 23.6 <= retrace <= 50.0:
+        return retrace, True, f"W4 Fib {retrace:.0f}% of W3"
+    else:
+        return retrace, False, f"W4 outside Fib ({retrace:.0f}%)"
+
 # ── SIGNAL ANALYSIS ───────────────────────────────────────────
 def analyze(coin, signal_type="swing"):
     sym = coin["sym"]
@@ -419,6 +540,12 @@ def analyze(coin, signal_type="swing"):
     inbox,box_label=calc_blue_box(pivots,current)
     smi=calc_smi(prices)
     trunc,trunc_note=detect_truncated_w5(pivots,prices) if len(pivots)>=6 else (False,"Need W5")
+    wave_c_ok,wave_c_ratio=detect_wave_c_bottom(pivots,prices,current)
+    # Fibonacci retracement — professional EW entry standard
+    fib_retrace, fib_valid, fib_label = calc_fib_retrace(pivots)
+    w4_fib_ret, w4_fib_valid, w4_fib_label = calc_w4_fib_retrace(pivots)
+    # Entry is valid if W2 OR W4 Fibonacci levels are hit
+    fib_entry_ok = fib_valid or w4_fib_valid
 
     # Volume
     avg_vol=sum(vols[-20:])/20 if len(vols)>=20 else 1
@@ -437,9 +564,9 @@ def analyze(coin, signal_type="swing"):
             "ew_valid":      ew_ok,
             "entry_zone":    entry!="",
             "wave_c_bottom": entry=="Wave C",  # Wave C = high probability entry
-            "price_level":   pct_ath<-40,
-            "deep_level":    pct_ath<-60,
-            "fib_level":     -80<pct_ath<-38,
+            "fib_w1_retrace": fib_valid,
+            "fib_golden":    38.2<=fib_retrace<=78.6,
+            "fib_entry":     fib_entry_ok,
             "rsi_ok":        rsi_val<45,
             "stoch_ok":      stoch<25,
             "macd_ok":       macd_cross or macd_turn,
@@ -454,22 +581,33 @@ def analyze(coin, signal_type="swing"):
             "blue_box":      inbox,
             "smi_ok":        smi < -40,
             "no_trunc_w5":   not trunc,
+            "wave_c_bottom": wave_c_ok,
         }
     else:
-        # For scalp — Wave C bottom is a PRIMARY entry signal
-        wave_c_entry = entry == "Wave C"
+        # SCALP — uses 4H/90 day local waves
+        # Fibonacci measured from LOCAL 4H waves not grand cycle
+        wave_c_entry = entry == "Wave C" or wave_c_ok
         checks={
+            # Timeframe
             "daily_bull":    daily_bull,
+            # Wave Structure
             "wave_count":    len(pivots)>=4,
-            "ew_valid":      ew_ok or wave_c_entry,  # Wave C valid even if EW rules not perfect
+            "ew_valid":      ew_ok or wave_c_entry,
             "entry_zone":    entry!="",
-            "wave_c_bottom": wave_c_entry,  # Bonus point for Wave C detection
+            "wave_c_bottom": wave_c_entry,
+            # Fibonacci of LOCAL 4H waves (professional standard)
+            "fib_entry":     fib_entry_ok,    # 4H W2 or W4 Fib level hit
+            "fib_valid":     fib_valid,        # 4H W2 retraced 38.2-100% of 4H W1
+            # Momentum
             "rsi_ok":        rsi_val<50,
             "stoch_ok":      stoch<30,
             "macd_ok":       macd_cross or macd_turn,
+            # Volume
             "vol_exp":       vol_exp,
+            # Structure
             "candlestick":   candle_bull,
             "alternation":   alt_ok,
+            # Safety
             "no_diagonal":   not diagonal,
             "not_overbought": rsi_val<70,
         }
@@ -489,8 +627,8 @@ def analyze(coin, signal_type="swing"):
         if not checks.get("macd_ok"):   missing.append("MACD not bullish")
         if not checks.get("entry_zone"):missing.append("No entry zone")
         if not checks.get("daily_bull"):missing.append("Daily not bullish")
-        if signal_type=="swing" and not checks.get("price_level"):
-            missing.append("Price not -40% from ATH")
+        if signal_type=="swing" and not checks.get("fib_w1_retrace"):
+            missing.append(f"W2 Fib not hit ({fib_retrace:.0f}% retrace — need 38-100%)")
         reason = " | ".join(missing[:3]) if missing else "Setup developing"
         return {
             "watch":   True,
@@ -574,6 +712,7 @@ def build_watch_msg(sym, sig_type, current, score, max_score, checks, rsi, stoch
     )
 
 def build_msg(sig):
+    # Add fib info to signal if available
     icon="⚡" if sig["type"]=="SCALP" else "📈"
     tp_labels=["(+3%)","+5%)","+8%)","+12%)"] if sig["type"]=="SCALP" else ["(+5%)","+10%)","+15%)","+20%)"]
     sl_label="(-3%)" if sig["type"]=="SCALP" else "(-5%)"
@@ -595,6 +734,65 @@ def build_msg(sig):
         f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M')} UTC\n"
         f"<i>Spot · Halal · Not financial advice</i>"
     )
+
+# ── FAST WATCH MONITOR ───────────────────────────────────────
+def monitor_watch_coins():
+    """
+    Check all watch-alerted coins every 5 minutes.
+    If score improves to full signal — send immediately.
+    """
+    if not sent_watches:
+        return
+
+    now = time.time()
+    for key, watch_time in list(sent_watches.items()):
+        # Only monitor coins watched in last 6 hours
+        if now - watch_time > 21600:
+            continue
+
+        # Parse sym and type from key
+        parts = key.replace("_watch_", "_").split("_")
+        if len(parts) < 2:
+            continue
+        sym = parts[0]
+        sig_type = "scalp" if "scalp" in key else "swing"
+
+        # Find coin in watchlist
+        coin = next((c for c in HALAL_WATCHLIST if c["sym"] == sym), None)
+        if not coin:
+            continue
+
+        try:
+            result = analyze(coin, sig_type)
+            if not result:
+                continue
+
+            # If it graduated from watch to full signal
+            if not result.get("watch"):
+                signal_key = sym + "_" + sig_type
+                last_sig = sent_signals.get(signal_key, 0)
+                if now - last_sig < (14400 if sig_type=="swing" else 7200):
+                    continue
+
+                print(f"  \U0001f7e2 WATCH->SIGNAL: {sym} {sig_type.upper()} {result['score']}/{result['max']}")
+                send_msg(build_msg(result))
+                sent_signals[signal_key] = now
+
+                # Track trade
+                trade_key = sym + "_" + sig_type
+                active_trades[trade_key] = {
+                    "sym": sym, "type": sig_type.upper(),
+                    "entry": result["current"],
+                    "sl": result["sl"], "tp1": result["tp1"],
+                    "tp2": result["tp2"], "tp3": result["tp3"],
+                    "tp4": result["tp4"],
+                    "hit_tp1": False, "hit_tp2": False,
+                    "hit_tp3": False, "hit_tp4": False,
+                    "closed": False, "time": now
+                }
+        except Exception as e:
+            print(f"  Watch monitor error {sym}: {e}")
+        time.sleep(2)
 
 # ── PRICE ALERT MONITOR ──────────────────────────────────────
 def check_price_alerts():
@@ -848,12 +1046,20 @@ def main():
 
         print(f"\n✅ Scan #{scan_count} - {signals} signal(s) - next in 15min")
 
-        # Monitor active trades every 5 minutes
-        print(f"  📊 Monitoring {len([t for t in active_trades.values() if not t.get('closed')])} active trades...")
-        for _ in range(3):  # Check 3 times during the 15min wait
-            time.sleep(300)  # Wait 5 minutes
+        # Monitor every 5 minutes during 15min wait
+        active_count = len([t for t in active_trades.values() if not t.get('closed')])
+        watch_count  = len(sent_watches)
+        print(f"  📊 Active trades: {active_count} | Watch coins: {watch_count}")
+
+        for cycle in range(3):  # 3 x 5min = 15min total
+            time.sleep(300)
+            # Check TP/SL on active trades
             check_price_alerts()
-        return  # Skip the sleep below since we already waited
+            # Fast-check watch coins for signal graduation
+            if sent_watches:
+                print(f"  🔍 Fast-checking {len(sent_watches)} watch coins...")
+                monitor_watch_coins()
+        return
 
         if scan_count%96==0:
             send_msg(
