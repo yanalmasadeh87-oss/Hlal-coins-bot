@@ -820,6 +820,36 @@ def analyze(coin, signal_type="swing"):
         }
 
     score=sum(checks.values())
+
+    # REQUIRED checks — these MUST ALL pass regardless of total score
+    # Situational checks (C=A, WXYXZ, wave_c, alternation etc.) 
+    # add confidence but are NOT required on every chart
+    if signal_type=="swing":
+        core_required = [
+            checks.get("daily_bull"),
+            checks.get("ma50"),
+            checks.get("wave_count"),
+            checks.get("ew_valid"),
+            checks.get("entry_zone"),
+            checks.get("fib_w1_retrace"),
+            checks.get("rsi_ok"),
+            checks.get("macd_ok"),
+            checks.get("no_diagonal"),
+            checks.get("no_trunc_w5"),
+        ]
+    else:
+        core_required = [
+            checks.get("daily_bull"),
+            checks.get("wave_count"),
+            checks.get("entry_zone"),
+            checks.get("fib_entry") or checks.get("fib_valid"),
+            checks.get("rsi_ok"),
+            checks.get("macd_ok"),
+            checks.get("no_diagonal"),
+            checks.get("not_overbought"),
+        ]
+
+    all_required_pass = all(core_required)
     watch_min = max(4, int(min_score*0.60))  # 60% of min score = watch alert
 
     # Block bad setups always
@@ -852,12 +882,10 @@ def analyze(coin, signal_type="swing"):
         }
 
     # Full signal qualifications
+    # ALL core required checks must pass
+    if not all_required_pass: return None
+    # Total score must meet minimum
     if score < min_score: return None
-    # Both modes require bullish daily trend
-    if not daily_bull: return None
-    # Momentum must confirm — RSI or Stoch or MACD required
-    if not(checks.get("rsi_ok") or checks.get("stoch_ok") or checks.get("macd_ok")):
-        return None
 
     # Levels
     sl  = current*(1-sl_pct)
