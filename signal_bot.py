@@ -438,7 +438,7 @@ def build_msg(sig):
     tp_labels=["(+3%)","+5%)","+8%)","+12%)"] if sig["type"]=="SCALP" else ["(+5%)","+10%)","+15%)","+20%)"]
     sl_label="(-3%)" if sig["type"]=="SCALP" else "(-5%)"
     return (
-        f"{icon} <b>{sig['type']} — {sig['sym']}/USDT</b>\n"
+        f"{icon} <b>{sig['type']} - {sig['sym']}/USDT</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"🟢 <b>Entry:</b>  {fp(sig['current']*0.99)} – {fp(sig['current']*1.01)}\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
@@ -458,21 +458,20 @@ def build_msg(sig):
 
 # ── PRICE ALERT MONITOR ──────────────────────────────────────
 def check_price_alerts():
-    """Check all active trades for TP/SL hits"""
+    """Check all active trades for TP/SL hits every 5 minutes"""
     if not active_trades:
         return
 
-    to_close = []
+    SEP = "\u2501" * 19
 
     for key, trade in list(active_trades.items()):
         if trade.get("closed"):
-            to_close.append(key)
             continue
 
         sym = trade["sym"]
         sig_type = trade["type"]
+        icon = "\u26a1" if sig_type == "SCALP" else "\U0001f4c8"
 
-        # Fetch current price
         try:
             prices, _ = fetch_klines(sym, "1m", 2)
             if not prices:
@@ -481,146 +480,106 @@ def check_price_alerts():
         except:
             continue
 
-        entry  = trade["entry"]
-        sl     = trade["sl"]
-        tp1    = trade["tp1"]
-        tp2    = trade["tp2"]
-        tp3    = trade["tp3"]
-        tp4    = trade["tp4"]
-        icon   = "⚡" if sig_type == "SCALP" else "📈"
+        entry = trade["entry"]
+        sl    = trade["sl"]
+        tp1   = trade["tp1"]
+        tp2   = trade["tp2"]
+        tp3   = trade["tp3"]
+        tp4   = trade["tp4"]
 
-        # Check SL hit
+        # SL hit
         if current <= sl and not trade.get("closed"):
-            send_msg(
-                f"🔴 <b>STOP LOSS HIT — {sym}/USDT</b>
-"
-                f"━━━━━━━━━━━━━━━━━━━
-"
-                f"{icon} {sig_type} Signal Closed
-"
-                f"📉 Price: {fp(current)}
-"
-                f"🔴 SL: {fp(sl)}
-"
-                f"📊 Entry was: {fp(entry)}
-"
-                f"💔 Loss: {((current-entry)/entry*100):.1f}%
-"
-                f"━━━━━━━━━━━━━━━━━━━
-"
-                f"<i>Exit full position. Wait for next signal.</i>"
+            loss = (current-entry)/entry*100
+            msg = (
+                "\U0001f534 <b>STOP LOSS HIT - " + sym + "/USDT</b>\n" +
+                SEP + "\n" +
+                icon + " " + sig_type + " Signal Closed\n" +
+                "\U0001f4c9 Price: " + fp(current) + "\n" +
+                "\U0001f534 SL: " + fp(sl) + "\n" +
+                "\U0001f4ca Entry was: " + fp(entry) + "\n" +
+                "\U0001f4b8 Loss: " + f"{loss:.1f}%" + "\n" +
+                SEP + "\n" +
+                "<i>Exit full position. Wait for next signal.</i>"
             )
+            send_msg(msg)
             active_trades[key]["closed"] = True
-            to_close.append(key)
             continue
 
-        # Check TP1 hit
+        # TP1 hit
         if current >= tp1 and not trade.get("hit_tp1"):
-            send_msg(
-                f"🎯 <b>TP1 HIT — {sym}/USDT</b>
-"
-                f"━━━━━━━━━━━━━━━━━━━
-"
-                f"{icon} {sig_type} Signal
-"
-                f"💰 Price: {fp(current)}
-"
-                f"✅ TP1: {fp(tp1)} reached
-"
-                f"📊 Profit: +{((current-entry)/entry*100):.1f}%
-"
-                f"━━━━━━━━━━━━━━━━━━━
-"
-                f"👉 Exit 25% of position
-"
-                f"🎯 Next target: TP2 {fp(tp2)}
-"
-                f"🔴 Move SL to entry: {fp(entry)}"
+            profit = (current-entry)/entry*100
+            msg = (
+                "\U0001f3af <b>TP1 HIT - " + sym + "/USDT</b>\n" +
+                SEP + "\n" +
+                icon + " " + sig_type + " Signal\n" +
+                "\U0001f4b0 Price: " + fp(current) + "\n" +
+                "\u2705 TP1: " + fp(tp1) + " reached\n" +
+                "\U0001f4ca Profit: +" + f"{profit:.1f}%" + "\n" +
+                SEP + "\n" +
+                "\U0001f449 Exit 25% of position\n" +
+                "\U0001f3af Next target: TP2 " + fp(tp2) + "\n" +
+                "\U0001f534 Move SL to entry: " + fp(entry)
             )
+            send_msg(msg)
             active_trades[key]["hit_tp1"] = True
-            active_trades[key]["sl"] = entry  # Move SL to entry (breakeven)
+            active_trades[key]["sl"] = entry
 
-        # Check TP2 hit
+        # TP2 hit
         if current >= tp2 and not trade.get("hit_tp2"):
-            send_msg(
-                f"🎯 <b>TP2 HIT — {sym}/USDT</b>
-"
-                f"━━━━━━━━━━━━━━━━━━━
-"
-                f"{icon} {sig_type} Signal
-"
-                f"💰 Price: {fp(current)}
-"
-                f"✅ TP2: {fp(tp2)} reached
-"
-                f"📊 Profit: +{((current-entry)/entry*100):.1f}%
-"
-                f"━━━━━━━━━━━━━━━━━━━
-"
-                f"👉 Exit 25% of position
-"
-                f"🎯 Next target: TP3 {fp(tp3)}
-"
-                f"🔴 Move SL to TP1: {fp(tp1)}"
+            profit = (current-entry)/entry*100
+            msg = (
+                "\U0001f3af <b>TP2 HIT - " + sym + "/USDT</b>\n" +
+                SEP + "\n" +
+                icon + " " + sig_type + " Signal\n" +
+                "\U0001f4b0 Price: " + fp(current) + "\n" +
+                "\u2705 TP2: " + fp(tp2) + " reached\n" +
+                "\U0001f4ca Profit: +" + f"{profit:.1f}%" + "\n" +
+                SEP + "\n" +
+                "\U0001f449 Exit 25% of position\n" +
+                "\U0001f3af Next target: TP3 " + fp(tp3) + "\n" +
+                "\U0001f534 Move SL to TP1: " + fp(tp1)
             )
+            send_msg(msg)
             active_trades[key]["hit_tp2"] = True
-            active_trades[key]["sl"] = tp1  # Move SL to TP1
+            active_trades[key]["sl"] = tp1
 
-        # Check TP3 hit
+        # TP3 hit
         if current >= tp3 and not trade.get("hit_tp3"):
-            send_msg(
-                f"🎯 <b>TP3 HIT — {sym}/USDT</b>
-"
-                f"━━━━━━━━━━━━━━━━━━━
-"
-                f"{icon} {sig_type} Signal
-"
-                f"💰 Price: {fp(current)}
-"
-                f"✅ TP3: {fp(tp3)} reached
-"
-                f"📊 Profit: +{((current-entry)/entry*100):.1f}%
-"
-                f"━━━━━━━━━━━━━━━━━━━
-"
-                f"👉 Exit 25% of position
-"
-                f"🎯 Final target: TP4 {fp(tp4)}
-"
-                f"🔴 Move SL to TP2: {fp(tp2)}"
+            profit = (current-entry)/entry*100
+            msg = (
+                "\U0001f3af <b>TP3 HIT - " + sym + "/USDT</b>\n" +
+                SEP + "\n" +
+                icon + " " + sig_type + " Signal\n" +
+                "\U0001f4b0 Price: " + fp(current) + "\n" +
+                "\u2705 TP3: " + fp(tp3) + " reached\n" +
+                "\U0001f4ca Profit: +" + f"{profit:.1f}%" + "\n" +
+                SEP + "\n" +
+                "\U0001f449 Exit 25% of position\n" +
+                "\U0001f3af Final target: TP4 " + fp(tp4) + "\n" +
+                "\U0001f534 Move SL to TP2: " + fp(tp2)
             )
+            send_msg(msg)
             active_trades[key]["hit_tp3"] = True
-            active_trades[key]["sl"] = tp2  # Move SL to TP2
+            active_trades[key]["sl"] = tp2
 
-        # Check TP4 hit
+        # TP4 hit
         if current >= tp4 and not trade.get("hit_tp4"):
-            send_msg(
-                f"🏆 <b>TP4 HIT — {sym}/USDT</b>
-"
-                f"━━━━━━━━━━━━━━━━━━━
-"
-                f"{icon} {sig_type} Signal COMPLETE ✅
-"
-                f"💰 Price: {fp(current)}
-"
-                f"✅ TP4: {fp(tp4)} reached
-"
-                f"📊 Full profit: +{((current-entry)/entry*100):.1f}%
-"
-                f"━━━━━━━━━━━━━━━━━━━
-"
-                f"👉 Exit remaining position
-"
-                f"🎉 Trade complete! الحمد لله 🤲"
+            profit = (current-entry)/entry*100
+            msg = (
+                "\U0001f3c6 <b>TP4 HIT - " + sym + "/USDT</b>\n" +
+                SEP + "\n" +
+                icon + " " + sig_type + " Signal COMPLETE\n" +
+                "\U0001f4b0 Price: " + fp(current) + "\n" +
+                "\u2705 TP4: " + fp(tp4) + " reached\n" +
+                "\U0001f4ca Full profit: +" + f"{profit:.1f}%" + "\n" +
+                SEP + "\n" +
+                "\U0001f449 Exit remaining position\n" +
+                "\U0001f389 Trade complete! \u0627\u0644\u062d\u0645\u062f \u0644\u0644\u0647 \U0001f91f"
             )
+            send_msg(msg)
             active_trades[key]["hit_tp4"] = True
             active_trades[key]["closed"] = True
-            to_close.append(key)
 
-    # Clean up old closed trades after 24 hours
-    for key in to_close:
-        if key in active_trades and active_trades[key].get("closed"):
-            pass  # Keep in dict for reference, cleanup happens after 24h
 
 # ── MAIN LOOP ─────────────────────────────────────────────────
 def main():
@@ -630,11 +589,11 @@ def main():
     t2=[c["sym"] for c in HALAL_WATCHLIST if c["tier"]==2]
     t3=[c["sym"] for c in HALAL_WATCHLIST if c["tier"]==3]
 
-    print(f"🕌 SIGNALSYM Bot V3 — Binance API")
+    print(f"🕌 SIGNALSYM Bot V3 - Binance API")
     print(f"📊 {total} halal coins | FREE & UNLIMITED")
 
     send_msg(
-        f"🕌 <b>SIGNALSYM Bot V3 — Active</b>\n"
+        f"🕌 <b>SIGNALSYM Bot V3 - Active</b>\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"✅ Shariah-Compliant Coins Only\n"
         f"🔄 Powered by Binance API\n"
@@ -721,7 +680,7 @@ def main():
                 print(f"err:{e}")
                 time.sleep(5)
 
-        print(f"\n✅ Scan #{scan_count} — {signals} signal(s) — next in 15min")
+        print(f"\n✅ Scan #{scan_count} - {signals} signal(s) - next in 15min")
 
         # Monitor active trades every 5 minutes
         print(f"  📊 Monitoring {len([t for t in active_trades.values() if not t.get('closed')])} active trades...")
