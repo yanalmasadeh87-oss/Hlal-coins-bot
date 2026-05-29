@@ -62,6 +62,10 @@ HALAL_WATCHLIST = [
 sent_signals = {}
 scan_count = 0
 
+# Track active trades for TP/SL monitoring
+# Format: {sym_type: {entry, sl, tp1, tp2, tp3, tp4, hit_tp1, hit_tp2, hit_tp3, hit_tp4, closed}}
+active_trades = {}
+
 # ── TELEGRAM ──────────────────────────────────────────────────
 def send_msg(msg):
     try:
@@ -220,6 +224,71 @@ def detect_diagonal(pivots,prices):
     r5=calc_rsi(prices[:min(pivots[4]["idx"]+1,len(prices))])
     return pivots[4]["price"]>=pivots[3]["price"] and r5<r3
 
+
+# ── WAVE SYMMETRY ─────────────────────────────────────────────
+def check_wave_symmetry(pivots):
+    if len(pivots) < 5: return False, "Need 5 waves"
+    w1 = abs(pivots[1]["price"]-pivots[0]["price"])
+    w3 = abs(pivots[3]["price"]-pivots[2]["price"])
+    w2 = abs(pivots[2]["price"]-pivots[1]["price"])
+    w4 = abs(pivots[4]["price"]-pivots[3]["price"])
+    score = 0; total = 0
+    if w1 > 0:
+        total += 1
+        if w3 >= w1: score += 1
+    if w2 > 0 and w4 > 0:
+        total += 1
+        if abs(w2-w4)/max(w2,w4) >= 0.15: score += 1
+    if len(pivots) >= 6:
+        w5 = abs(pivots[5]["price"]-pivots[4]["price"])
+        if w3 > 0:
+            total += 1
+            if w5 <= w3 * 1.2: score += 1
+    pct = score/total*100 if total > 0 else 50
+    return pct >= 60, f"Symmetry {pct:.0f}%"
+
+# ── BLUE BOX ──────────────────────────────────────────────────
+def calc_blue_box(pivots, current):
+    if len(pivots) < 3: return False, "No box"
+    w1_range = abs(pivots[1]["price"]-pivots[0]["price"])
+    direction = 1 if pivots[1]["price"] > pivots[0]["price"] else -1
+    fib618 = pivots[1]["price"] - direction * w1_range * 0.618
+    fib786 = pivots[1]["price"] - direction * w1_range * 0.786
+    box_top = max(fib618, fib786)
+    box_bot = min(fib618, fib786)
+    in_w2_box = box_bot <= current <= box_top
+    in_w4_box = False
+    if len(pivots) >= 5:
+        w3_range = abs(pivots[3]["price"]-pivots[2]["price"])
+        dir3 = 1 if pivots[3]["price"] > pivots[2]["price"] else -1
+        f382 = pivots[3]["price"] - dir3 * w3_range * 0.382
+        f618 = pivots[3]["price"] - dir3 * w3_range * 0.618
+        in_w4_box = min(f382,f618) <= current <= max(f382,f618)
+    in_box = in_w2_box or in_w4_box
+    label = "W2 Blue Box ✓" if in_w2_box else "W4 Blue Box ✓" if in_w4_box else "Outside Blue Box"
+    return in_box, label
+
+# ── SMI ───────────────────────────────────────────────────────
+def calc_smi(prices, period=14):
+    if len(prices) < period: return 0
+    sl = prices[-period:]
+    high = max(sl); low = min(sl)
+    mid = (high+low)/2
+    rng = high-low
+    if rng == 0: return 0
+    raw = ((prices[-1]-mid)/(rng/2))*100
+    return raw
+
+# ── TRUNCATED W5 ──────────────────────────────────────────────
+def detect_truncated_w5(pivots, prices):
+    if len(pivots) < 6: return False, "Need W5"
+    w3_high = pivots[3]["price"]
+    w5_high = pivots[5]["price"]
+    truncated = w5_high < w3_high and w5_high > pivots[4]["price"]
+    if truncated:
+        return True, "⚠️ Truncated W5 — Reversal imminent — DO NOT ENTER"
+    return False, "No truncation"
+
 # ── SIGNAL ANALYSIS ───────────────────────────────────────────
 def analyze(coin, signal_type="swing"):
     sym = coin["sym"]
@@ -228,7 +297,7 @@ def analyze(coin, signal_type="swing"):
         prices,vols = fetch_klines(sym,"1d",730)
         min_move=0.10
         sl_pct=SWING_SL; tp1=SWING_TP1; tp2=SWING_TP2; tp3=SWING_TP3; tp4=SWING_TP4
-        min_score=12; max_score=18
+        min_score=12; max_score=22
         hold="Days to weeks"
     else:
         # Scalp: use 4h data for better wave detection
@@ -259,6 +328,10 @@ def analyze(coin, signal_type="swing"):
     alt_ok,alt_note=check_alternation(pivots)
     candle_name,candle_bull=detect_candlestick(prices)
     diagonal=detect_diagonal(pivots,prices) if len(pivots)>=5 else False
+    sym_ok,sym_note=check_wave_symmetry(pivots)
+    inbox,box_label=calc_blue_box(pivots,current)
+    smi=calc_smi(prices)
+    trunc,trunc_note=detect_truncated_w5(pivots,prices) if len(pivots)>=6 else (False,"Need W5")
 
     # Volume
     avg_vol=sum(vols[-20:])/20 if len(vols)>=20 else 1
@@ -289,6 +362,10 @@ def analyze(coin, signal_type="swing"):
             "alternation":   alt_ok,
             "candlestick":   candle_bull,
             "no_diagonal":   not diagonal,
+            "wave_symmetry": sym_ok,
+            "blue_box":      inbox,
+            "smi_ok":        smi < -40,
+            "no_trunc_w5":   not trunc,
         }
     else:
         checks={
@@ -311,6 +388,7 @@ def analyze(coin, signal_type="swing"):
     # Qualifications
     if score<min_score: return None
     if diagonal: return None
+    if trunc: return None  # Never enter on truncated W5
     if not daily_bull and signal_type=="swing": return None
     if not(checks.get("rsi_ok") or checks.get("stoch_ok") or checks.get("macd_ok")):
         return None
@@ -378,6 +456,172 @@ def build_msg(sig):
         f"<i>Spot · Halal · Not financial advice</i>"
     )
 
+# ── PRICE ALERT MONITOR ──────────────────────────────────────
+def check_price_alerts():
+    """Check all active trades for TP/SL hits"""
+    if not active_trades:
+        return
+
+    to_close = []
+
+    for key, trade in list(active_trades.items()):
+        if trade.get("closed"):
+            to_close.append(key)
+            continue
+
+        sym = trade["sym"]
+        sig_type = trade["type"]
+
+        # Fetch current price
+        try:
+            prices, _ = fetch_klines(sym, "1m", 2)
+            if not prices:
+                continue
+            current = prices[-1]
+        except:
+            continue
+
+        entry  = trade["entry"]
+        sl     = trade["sl"]
+        tp1    = trade["tp1"]
+        tp2    = trade["tp2"]
+        tp3    = trade["tp3"]
+        tp4    = trade["tp4"]
+        icon   = "⚡" if sig_type == "SCALP" else "📈"
+
+        # Check SL hit
+        if current <= sl and not trade.get("closed"):
+            send_msg(
+                f"🔴 <b>STOP LOSS HIT — {sym}/USDT</b>
+"
+                f"━━━━━━━━━━━━━━━━━━━
+"
+                f"{icon} {sig_type} Signal Closed
+"
+                f"📉 Price: {fp(current)}
+"
+                f"🔴 SL: {fp(sl)}
+"
+                f"📊 Entry was: {fp(entry)}
+"
+                f"💔 Loss: {((current-entry)/entry*100):.1f}%
+"
+                f"━━━━━━━━━━━━━━━━━━━
+"
+                f"<i>Exit full position. Wait for next signal.</i>"
+            )
+            active_trades[key]["closed"] = True
+            to_close.append(key)
+            continue
+
+        # Check TP1 hit
+        if current >= tp1 and not trade.get("hit_tp1"):
+            send_msg(
+                f"🎯 <b>TP1 HIT — {sym}/USDT</b>
+"
+                f"━━━━━━━━━━━━━━━━━━━
+"
+                f"{icon} {sig_type} Signal
+"
+                f"💰 Price: {fp(current)}
+"
+                f"✅ TP1: {fp(tp1)} reached
+"
+                f"📊 Profit: +{((current-entry)/entry*100):.1f}%
+"
+                f"━━━━━━━━━━━━━━━━━━━
+"
+                f"👉 Exit 25% of position
+"
+                f"🎯 Next target: TP2 {fp(tp2)}
+"
+                f"🔴 Move SL to entry: {fp(entry)}"
+            )
+            active_trades[key]["hit_tp1"] = True
+            active_trades[key]["sl"] = entry  # Move SL to entry (breakeven)
+
+        # Check TP2 hit
+        if current >= tp2 and not trade.get("hit_tp2"):
+            send_msg(
+                f"🎯 <b>TP2 HIT — {sym}/USDT</b>
+"
+                f"━━━━━━━━━━━━━━━━━━━
+"
+                f"{icon} {sig_type} Signal
+"
+                f"💰 Price: {fp(current)}
+"
+                f"✅ TP2: {fp(tp2)} reached
+"
+                f"📊 Profit: +{((current-entry)/entry*100):.1f}%
+"
+                f"━━━━━━━━━━━━━━━━━━━
+"
+                f"👉 Exit 25% of position
+"
+                f"🎯 Next target: TP3 {fp(tp3)}
+"
+                f"🔴 Move SL to TP1: {fp(tp1)}"
+            )
+            active_trades[key]["hit_tp2"] = True
+            active_trades[key]["sl"] = tp1  # Move SL to TP1
+
+        # Check TP3 hit
+        if current >= tp3 and not trade.get("hit_tp3"):
+            send_msg(
+                f"🎯 <b>TP3 HIT — {sym}/USDT</b>
+"
+                f"━━━━━━━━━━━━━━━━━━━
+"
+                f"{icon} {sig_type} Signal
+"
+                f"💰 Price: {fp(current)}
+"
+                f"✅ TP3: {fp(tp3)} reached
+"
+                f"📊 Profit: +{((current-entry)/entry*100):.1f}%
+"
+                f"━━━━━━━━━━━━━━━━━━━
+"
+                f"👉 Exit 25% of position
+"
+                f"🎯 Final target: TP4 {fp(tp4)}
+"
+                f"🔴 Move SL to TP2: {fp(tp2)}"
+            )
+            active_trades[key]["hit_tp3"] = True
+            active_trades[key]["sl"] = tp2  # Move SL to TP2
+
+        # Check TP4 hit
+        if current >= tp4 and not trade.get("hit_tp4"):
+            send_msg(
+                f"🏆 <b>TP4 HIT — {sym}/USDT</b>
+"
+                f"━━━━━━━━━━━━━━━━━━━
+"
+                f"{icon} {sig_type} Signal COMPLETE ✅
+"
+                f"💰 Price: {fp(current)}
+"
+                f"✅ TP4: {fp(tp4)} reached
+"
+                f"📊 Full profit: +{((current-entry)/entry*100):.1f}%
+"
+                f"━━━━━━━━━━━━━━━━━━━
+"
+                f"👉 Exit remaining position
+"
+                f"🎉 Trade complete! الحمد لله 🤲"
+            )
+            active_trades[key]["hit_tp4"] = True
+            active_trades[key]["closed"] = True
+            to_close.append(key)
+
+    # Clean up old closed trades after 24 hours
+    for key in to_close:
+        if key in active_trades and active_trades[key].get("closed"):
+            pass  # Keep in dict for reference, cleanup happens after 24h
+
 # ── MAIN LOOP ─────────────────────────────────────────────────
 def main():
     global scan_count
@@ -428,6 +672,18 @@ def main():
                         send_msg(build_msg(sw))
                         sent_signals[swing_key]=time.time()
                         signals+=1
+                        # Track trade for TP/SL alerts
+                        active_trades[swing_key] = {
+                            "sym": sym, "type": "SWING",
+                            "entry": sw["current"],
+                            "sl": sw["sl"], "tp1": sw["tp1"],
+                            "tp2": sw["tp2"], "tp3": sw["tp3"],
+                            "tp4": sw["tp4"],
+                            "hit_tp1": False, "hit_tp2": False,
+                            "hit_tp3": False, "hit_tp4": False,
+                            "closed": False,
+                            "time": time.time()
+                        }
                         time.sleep(2)
 
                 # SCALP
@@ -443,6 +699,18 @@ def main():
                         send_msg(build_msg(sc))
                         sent_signals[scalp_key]=time.time()
                         signals+=1
+                        # Track trade for TP/SL alerts
+                        active_trades[scalp_key] = {
+                            "sym": sym, "type": "SCALP",
+                            "entry": sc["current"],
+                            "sl": sc["sl"], "tp1": sc["tp1"],
+                            "tp2": sc["tp2"], "tp3": sc["tp3"],
+                            "tp4": sc["tp4"],
+                            "hit_tp1": False, "hit_tp2": False,
+                            "hit_tp3": False, "hit_tp4": False,
+                            "closed": False,
+                            "time": time.time()
+                        }
                         time.sleep(2)
                 else:
                     print("–")
@@ -455,6 +723,13 @@ def main():
 
         print(f"\n✅ Scan #{scan_count} — {signals} signal(s) — next in 15min")
 
+        # Monitor active trades every 5 minutes
+        print(f"  📊 Monitoring {len([t for t in active_trades.values() if not t.get('closed')])} active trades...")
+        for _ in range(3):  # Check 3 times during the 15min wait
+            time.sleep(300)  # Wait 5 minutes
+            check_price_alerts()
+        return  # Skip the sleep below since we already waited
+
         if scan_count%96==0:
             send_msg(
                 f"💓 <b>Heartbeat</b>\n"
@@ -465,7 +740,7 @@ def main():
                 f"الحمد لله 🤲"
             )
 
-        time.sleep(900)
+        # time.sleep(900) -- handled above in monitor loop
 
 if __name__=="__main__":
     main()
