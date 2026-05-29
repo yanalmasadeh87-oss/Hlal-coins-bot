@@ -301,11 +301,11 @@ def analyze(coin, signal_type="swing"):
         hold="Days to weeks"
     else:
         # Scalp: use 4h data for better wave detection
-        prices,vols = fetch_klines(sym,"4h",168)  # 28 days of 4h
-        min_move=0.04
+        prices,vols = fetch_klines(sym,"4h",540)  # 90 days of 4H
+        min_move=0.05
         sl_pct=SCALP_SL; tp1=SCALP_TP1; tp2=SCALP_TP2; tp3=SCALP_TP3; tp4=SCALP_TP4
         min_score=8; max_score=12
-        hold="4-8 hours max"
+        hold="1-3 days (4H trade)"
 
     if len(prices)<50: return None
 
