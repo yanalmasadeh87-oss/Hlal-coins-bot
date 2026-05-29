@@ -629,25 +629,34 @@ def detect_wxyxz(pivots, current):
             continue
 
         # ── MEASURE X WAVES ───────────────────────────────
-        # X1: from W bottom (p1) to X1 top (p2)
         x1_price = abs(p2["price"] - p1["price"])
         x1_time  = p2["idx"] - p1["idx"]
-
-        # X2: from Y bottom (p3) to X2 top (p4)
         x2_price = abs(p4["price"] - p3["price"])
         x2_time  = p4["idx"] - p3["idx"]
 
         if x1_price == 0 or x1_time == 0:
             continue
 
-        # ── X1 = X2 CHECK ─────────────────────────────────
+        # X bounces must be significant (>5% moves)
+        x1_pct = x1_price / p1["price"] * 100 if p1["price"] else 0
+        x2_pct = x2_price / p3["price"] * 100 if p3["price"] else 0
+        if x1_pct < 5 or x2_pct < 5:
+            continue
+
+        # W and Y waves must be larger than X waves
+        w_size = abs(p1["price"] - p0["price"])
+        y_size = abs(p3["price"] - p2["price"])
+        if x1_price >= w_size * 0.8 or x2_price >= y_size * 0.8:
+            continue
+
+        # ── STRICT X1=X2 CHECK (within 15%) ───────────────
         price_ratio = (x2_price / x1_price) * 100
         time_ratio  = (x2_time  / x1_time)  * 100
 
-        price_equal = 80 <= price_ratio <= 120  # Within 20%
-        time_equal  = 75 <= time_ratio  <= 125  # Within 25%
+        price_equal = 85 <= price_ratio <= 115  # Strict 15%
+        time_equal  = 85 <= time_ratio  <= 115  # Strict 15%
 
-        both_equal = price_equal and time_equal
+        both_equal = price_equal and time_equal  # BOTH required
 
         # ── Z WAVE PROXIMITY ──────────────────────────────
         # Is current price near the Z wave bottom?
@@ -655,11 +664,9 @@ def detect_wxyxz(pivots, current):
         proximity = abs(current - z_bottom) / z_bottom * 100 if z_bottom else 100
         near_z = proximity <= 8  # Within 8% of Z bottom
 
-        if price_equal or time_equal:
-            confidence = "HIGH" if both_equal else "MEDIUM"
+        if both_equal:  # STRICT — only report when BOTH price and time equal
             label = (
-                f"WXYXZ Detected | X1=X2 "
-                f"{'Price+Time ✓' if both_equal else 'Price ✓' if price_equal else 'Time ✓'} "
+                f"WXYXZ X1=X2 Price+Time ✓ "
                 f"({price_ratio:.0f}% price | {time_ratio:.0f}% time)"
             )
             best_result = {
@@ -673,7 +680,7 @@ def detect_wxyxz(pivots, current):
                 "z_price":     z_bottom,
                 "x1_price":    x1_price,
                 "x2_price":    x2_price,
-                "confidence":  confidence,
+                "confidence":  "HIGH",
                 "label":       label,
             }
             if both_equal and near_z:
@@ -697,7 +704,7 @@ def analyze(coin, signal_type="swing"):
         prices,vols = fetch_klines(sym,"1d",730)
         min_move=0.10
         sl_pct=SWING_SL; tp1=SWING_TP1; tp2=SWING_TP2; tp3=SWING_TP3; tp4=SWING_TP4
-        min_score=12; max_score=23
+        min_score=12; max_score=22
         hold="Days to weeks"
     else:
         # Scalp: use 4h data for better wave detection
@@ -846,8 +853,10 @@ def analyze(coin, signal_type="swing"):
 
     # Full signal qualifications
     if score < min_score: return None
-    if not daily_bull and signal_type=="swing": return None
-    if not(checks.get("rsi_ok") or checks.get("stoch_ok") or checks.get("macd_ok")):
+    # Swing requires bullish daily trend
+    if signal_type=="swing" and not daily_bull: return None
+    # At least one momentum indicator must confirm
+    if not(checks.get("rsi_ok") or checks.get("stoch_ok") or checks.get("macd_ok") or checks.get("wave_c_bottom")):
         return None
 
     # Levels
@@ -857,7 +866,7 @@ def analyze(coin, signal_type="swing"):
     t3  = current*(1+tp3)
     t4  = current*(1+tp4)
 
-    if wxyxz_ok and score>=int(max_score*0.60): conf="🔥🔥 WXYXZ - HIGHEST CONFIDENCE"
+    if wxyxz_ok and score>=int(max_score*0.55): conf="🔥🔥 WXYXZ X1=X2 - HIGHEST CONFIDENCE"
     elif score>=int(max_score*0.85): conf="🔥 HIGH"
     elif score>=int(max_score*0.70): conf="⚡ MEDIUM-HIGH"
     else: conf="✳️ MEDIUM"
@@ -1201,7 +1210,6 @@ def main():
                 # SCALP
                 scalp_key = sym+"_scalp"
                 watch_key_sc = sym+"_watch_scalp"
-                time.sleep(2)
                 sc = analyze(coin,"scalp")
                 if sc:
                     if sc.get("watch"):
@@ -1239,7 +1247,7 @@ def main():
                 else:
                     print("–")
 
-                time.sleep(3)
+                time.sleep(1)  # 1 second between coins
 
             except Exception as e:
                 print(f"err:{e}")
