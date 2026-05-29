@@ -1351,7 +1351,7 @@ def format_tp_alert(symbol, tp_num, price, new_sl):
 
 def format_sl_alert(symbol, price):
     return (
-        f"🔴 <b>STOP LOSS — {symbol}</b>\n"
+        f"🔴 <b>STOP LOSS - {symbol}</b>\n"
         f"💵 Exited: ${price:,.4f}\n"
         f"⏳ Waiting for next signal\n"
         f"#SIGNALSYM #{symbol}"
