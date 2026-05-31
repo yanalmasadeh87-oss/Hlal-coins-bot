@@ -12,7 +12,7 @@ from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
-API_POAPI_PORT = int(os.getenv("PORT", 8080))
+API_PORT = int(os.getenv("PORT", 8080))
 
 def start_api_server():
     """Starts a lightweight HTTP server to serve bot data to the dashboard."""
@@ -83,8 +83,8 @@ def start_api_server():
 # ================================================================
 # CONFIGURATION
 # ================================================================
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-CHAT_ID        = os.getenv("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID_HERE")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "7975488031:AAHLdeNTM-YIItriXwradU4bPyCMdR-mAIY")
+CHAT_ID        = os.getenv("TELEGRAM_CHAT_ID", "8422276082")
 
 BN_BASE        = "https://api.binance.com/api/v3"
 TG_BASE        = None
@@ -1988,25 +1988,23 @@ def analyze(coin, signal_type="swing"):
         return None
 
     # LAZY-LOAD MTF: Only fetch after all filters passed
-    # Fix A: Each timeframe slot must use its own real data
+    # Each timeframe slot uses its own real data
     mtf_alignment = None
     if struct_type not in ("TREND_CONTINUATION",) or conf_score >= 50:
         h1_prices, h1_highs, h1_lows, h1_vols, h1_opens = fetch_klines_full(sym, "1h", 500)
         if len(h1_prices) >= 50:
             if signal_type == "swing":
-                # Swing uses 1D — fetch 4H separately for MTF
                 h4_p, h4_h, h4_l, h4_v, h4_o = fetch_klines_full(sym, "4h", 500)
                 mtf_data = {
-                    "1d": {"prices": prices,   "highs": highs,   "lows": lows,   "vols": vols,   "opens": opens},
-                    "4h": {"prices": h4_p,     "highs": h4_h,    "lows": h4_l,   "vols": h4_v,   "opens": h4_o},
+                    "1d": {"prices": prices,    "highs": highs,   "lows": lows,   "vols": vols,   "opens": opens},
+                    "4h": {"prices": h4_p,      "highs": h4_h,    "lows": h4_l,   "vols": h4_v,   "opens": h4_o},
                     "1h": {"prices": h1_prices, "highs": h1_highs,"lows": h1_lows,"vols": h1_vols,"opens": h1_opens}
                 }
             else:
-                # Scalp uses 4H — fetch 1D separately for MTF
                 d1_p, d1_h, d1_l, d1_v, d1_o = fetch_klines_full(sym, "1d", 200)
                 mtf_data = {
-                    "1d": {"prices": d1_p,     "highs": d1_h,    "lows": d1_l,   "vols": d1_v,   "opens": d1_o},
-                    "4h": {"prices": prices,   "highs": highs,   "lows": lows,   "vols": vols,   "opens": opens},
+                    "1d": {"prices": d1_p,      "highs": d1_h,    "lows": d1_l,   "vols": d1_v,   "opens": d1_o},
+                    "4h": {"prices": prices,    "highs": highs,   "lows": lows,   "vols": vols,   "opens": opens},
                     "1h": {"prices": h1_prices, "highs": h1_highs,"lows": h1_lows,"vols": h1_vols,"opens": h1_opens}
                 }
             mtf_alignment = check_mtf_alignment(mtf_data)
@@ -2097,8 +2095,6 @@ def fp(p):
     return "$" + "{:.7f}".format(p)
 
 def build_msg(sig):
-    # Clean format: entry, SL, TP1-4, hold, score only
-    # All engine data (MTF, candlestick, liquidity, structure) goes to dashboard
     is_sc = sig["type"] == "SCALP"
     icon  = "⚡" if is_sc else "📈"
     tp_l  = ["+3%","+5%","+8%","+12%"] if is_sc else ["+5%","+10%","+15%","+20%"]
