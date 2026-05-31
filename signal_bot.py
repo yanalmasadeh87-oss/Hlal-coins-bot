@@ -21,7 +21,13 @@ def start_api_server():
             pass  # Suppress logs
 
         def do_GET(self):
-            if self.path == '/api/status':
+            if self.path == '/ping' or self.path == '/':
+                self.send_response(200)
+                self.send_header('Content-type', 'text/plain')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(b'OK')
+            elif self.path == '/api/status':
                 self.send_response(200)
                 self.send_header('Content-type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
@@ -78,7 +84,23 @@ def start_api_server():
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     print("  [API] Dashboard server running on http://localhost:" + str(API_PORT))
-    print("  [API] Endpoints: /api/status, /api/signals")
+    print("  [API] Endpoints: /ping, /api/status, /api/signals")
+
+    # Keep-alive: self-ping every 10 minutes to prevent Render free tier spin-down
+    def keep_alive():
+        import urllib.request
+        while True:
+            time.sleep(600)
+            try:
+                # Try to detect our own public URL from environment, fallback to localhost
+                host = os.getenv("RENDER_EXTERNAL_URL", "http://localhost:" + str(API_PORT))
+                req = urllib.request.Request(host + "/ping", method="HEAD")
+                req.add_header("User-Agent", "EW-Bot-KeepAlive")
+                urllib.request.urlopen(req, timeout=10)
+            except Exception:
+                pass
+    ka_thread = threading.Thread(target=keep_alive, daemon=True)
+    ka_thread.start()
 
 # ================================================================
 # CONFIGURATION
