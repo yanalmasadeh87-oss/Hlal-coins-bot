@@ -186,6 +186,43 @@ def context_adjustment(sym, ctx):
     return max(-20, min(+15, adj))
 
 # ═══════════════════════════════════════════════════════════════════
+# HARD MARKET FILTERS - NEW
+# Returns (passed, reason) tuple. If passed=False, signal is BLOCKED.
+# ═══════════════════════════════════════════════════════════════════
+def hard_market_filter(sym, ctx):
+    if not ctx:
+        return True, "No market context"
+
+    fg = ctx.get("fg_now", 50)
+    fg_zone = ctx.get("fg_zone", "NEUTRAL")
+    total_trend = ctx.get("total_trend", "NEUTRAL")
+    btc_dom = ctx.get("btc_dom", 50)
+    btc_dom_trend = ctx.get("btc_dom_trend", "NEUTRAL")
+    total3_trend = ctx.get("total3_trend", "NEUTRAL")
+
+    # RULE 1: Extreme Fear - BLOCK everything, WATCH only
+    if fg <= 20 and fg_zone == "EXTREME_FEAR":
+        return False, "HARD FILTER: Extreme Fear (FG=" + str(fg) + ") - Market panic, no entries"
+
+    # RULE 2: Total market falling - BLOCK all altcoins
+    if total_trend == "FALLING" and sym not in ("BTC", "ETH"):
+        return False, "HARD FILTER: Total market falling - Altcoin season over"
+
+    # RULE 3: BTC.D > 55% and rising - BLOCK all altcoins (BTC dominance crushing alts)
+    if btc_dom > 55 and btc_dom_trend == "RISING" and sym not in ("BTC", "ETH"):
+        return False, "HARD FILTER: BTC.D=" + str(btc_dom) + "% rising - Alt bloodbath"
+
+    # RULE 4: TOTAL3 falling + BTC.D rising - BLOCK everything except BTC
+    if total3_trend == "FALLING" and btc_dom_trend == "RISING" and sym != "BTC":
+        return False, "HARD FILTER: TOTAL3 falling + BTC.D rising - Only BTC survives"
+
+    # RULE 5: Fear zone (21-40) - Reduce position, allow with warning
+    if fg <= 40 and fg_zone == "FEAR":
+        return True, "WARNING: Fear zone (FG=" + str(fg) + ") - Reduced position size recommended"
+
+    return True, "Market OK - " + str(btc_dom) + "% BTC.D | FG=" + str(fg) + " | Total=" + total_trend
+
+# ═══════════════════════════════════════════════════════════════════
 # INDICATORS
 # ═══════════════════════════════════════════════════════════════════
 def calc_rsi(prices, period=14):
@@ -1387,6 +1424,12 @@ def analyze(coin, signal_type="swing"):
     if final_score < 35:
         return None
 
+    # HARD MARKET FILTER - NEW
+    market_passed, market_reason = hard_market_filter(sym, market_ctx)
+    if not market_passed:
+        print("    " + market_reason)
+        return None
+
     htf_ok, htf_note = htf_validation(sym)
     if not htf_ok:
         print("    " + htf_note)
@@ -1418,7 +1461,8 @@ def analyze(coin, signal_type="swing"):
             "current": current, "score": final_score, "rsi": rsi_val, "stoch": stoch,
             "struct_label": struct_label, "struct_type": struct_type,
             "position_size": position_size,
-            "reason": "Developing - " + struct_label + " (score " + str(final_score) + "/100)"
+            "reason": "Developing - " + struct_label + " (score " + str(final_score) + "/100)",
+            "market_ctx": market_ctx
         }
 
     return {
@@ -1432,7 +1476,8 @@ def analyze(coin, signal_type="swing"):
         "regime": regime["label"], "phase": phase, "trend": trend["label"],
         "divergence": div["bullish"],
         "position_size": position_size,
-        "is_locked": is_locked
+        "is_locked": is_locked,
+        "market_ctx": market_ctx
     }
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1619,6 +1664,18 @@ def monitor_watch_coins():
 # ═══════════════════════════════════════════════════════════════════
 # MAIN LOOP
 # ═══════════════════════════════════════════════════════════════════
+def export_signals_to_json():
+    try:
+        import json
+        data = []
+        for key, trade in active_trades.items():
+            if not trade.get("closed"):
+                data.append(trade)
+        with open("signals.json", "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print("Export error: " + str(e))
+
 def main():
     global scan_count, market_ctx
 
