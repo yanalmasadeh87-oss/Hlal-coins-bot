@@ -566,7 +566,7 @@ def detect_wxyxz(pivots, current):
 def detect_trend_continuation(prices, highs, lows, pivots, current, trend, htf_prices):
     if len(prices) < 30: return None
 
-    # Fix: Stricter criteria — HTF must be bullish
+    # Fix: HTF must be bullish
     htf_bullish = False
     if len(htf_prices) >= 20:
         htf_ma20 = sum(htf_prices[-20:]) / 20
@@ -574,14 +574,13 @@ def detect_trend_continuation(prices, highs, lows, pivots, current, trend, htf_p
     if not htf_bullish:
         return None
 
-    # Fix: Need at least 3 HH/HL (not just 2)
+    # Fix: Need at least 3 HH/HL
     recent_peaks = [p for p in pivots if p["type"] == "peak" and p["idx"] > len(prices) * 0.3]
     recent_troughs = [p for p in pivots if p["type"] == "trough" and p["idx"] > len(prices) * 0.3]
 
     if len(recent_peaks) < 3 or len(recent_troughs) < 3:
         return None
 
-    # Check 3 consecutive HH and HL
     hh1 = recent_peaks[-1]["price"] > recent_peaks[-2]["price"]
     hh2 = recent_peaks[-2]["price"] > recent_peaks[-3]["price"]
     hl1 = recent_troughs[-1]["price"] > recent_troughs[-2]["price"]
@@ -590,7 +589,7 @@ def detect_trend_continuation(prices, highs, lows, pivots, current, trend, htf_p
     if not (hh1 and hh2 and hl1 and hl2):
         return None
 
-    # Fix: ADX > 30 (not 20)
+    # Fix: ADX > 30
     adx = calc_adx(highs, lows, prices, 14)
     if adx["adx"] < 30:
         return None
@@ -603,13 +602,12 @@ def detect_trend_continuation(prices, highs, lows, pivots, current, trend, htf_p
     if current < ma50 * 0.98:
         return None
 
-    # Fix: WATCH only — never a direct signal
-    # Return as WATCH with score capped at 50
+    # Fix: WATCH only, score capped
     if len(pivots) >= 5:
         return {
             "type": "TREND_CONTINUATION",
             "sub_type": "IMPULSE_W3_LIKELY",
-            "label": "Trend Continuation (W3/Parabolic) — WATCH",
+            "label": "Trend Continuation (W3/Parabolic) - WATCH",
             "score": 50,
             "entry_wave": "W3 or Pullback",
             "entry_price": current,
@@ -621,7 +619,7 @@ def detect_trend_continuation(prices, highs, lows, pivots, current, trend, htf_p
         return {
             "type": "TREND_CONTINUATION",
             "sub_type": "EARLY_TREND",
-            "label": "Early Trend Continuation — WATCH",
+            "label": "Early Trend Continuation - WATCH",
             "score": 45,
             "entry_wave": "Pullback to MA20",
             "entry_price": sum(prices[-20:]) / 20,
@@ -707,14 +705,12 @@ def recognize_chart_structure(prices, highs, lows, pivots, current, pct_ath,
         s["confidence_score"] = score_structure_v6(s, rsi_val, macd_bull, vol_dec, vol_exp, stoch, trend)
         candidates.append(s)
 
-    # CANDIDATE 1: Trend Continuation — capped at 55, WATCH only
+    # CANDIDATE 1: Trend Continuation — capped at 70 max
     trend_cont = detect_trend_continuation(prices, highs, lows, pivots, current, trend, htf_prices)
     if trend_cont:
-        # Fix: Never let trend continuation outrank real EW structures
-        if trend_cont["score"] > 55:
-            trend_cont["score"] = 55
-        # Fix: Mark as watch_only — never a direct signal
-        trend_cont["watch_only"] = True
+        # Cap the score so it never outranks a confirmed ABC or WXYXZ
+        if trend_cont["score"] > 70:
+            trend_cont["score"] = 70
         add_candidate(trend_cont)
 
     # CANDIDATE 2: Classical Patterns
@@ -934,22 +930,21 @@ def recognize_chart_structure(prices, highs, lows, pivots, current, pct_ath,
 # ═══════════════════════════════════════════════════════════════════
 # ═══════════════════════════════════════════════════════════════════
 # SCORING ENGINE V6 — HARD MAX CEILINGS PER STRUCTURE TYPE
-# AGREED FIXES APPLIED:
+# AGREED FIXES:
 # 1. TREND_CONTINUATION max = 55 (was 65-70)
-# 2. No EW/Fib bonuses for trend-only signals (reserved for real EW)
-# 3. Shallow pullbacks stay as corrections (no phase override)
-# 4. EARLY_TREND: max 50, ADX>30, 3 HH/HL, HTF bullish, WATCH only
-# Structure              Max Score   EW Bonus   Fib Bonus   Notes
-# TREND_CONTINUATION         55         0          0       Trend only, NO EW/Fib
-# IMPULSE_W3_LIKELY          55         0          0       WATCH only, 3xHH/HL, ADX>30
-# EARLY_TREND                50         0          0       WATCH only, weakest signal
-# EW_W2/W4                  100        25         15       Full EW validation
-# ABC_ZIGZAG                100        25         15       Full EW validation
-# WXYXZ                      95        20         12       Complex but validated
-# EXPANDED_FLAT              90        18         10       Validated correction
-# RUNNING_CORRECTION         85        15          8       Validated correction
-# DOUBLE_BOTTOM            80        12          8       Pattern only
-# FALLING_WEDGE              75        10          5       Pattern only
+# 2. No EW/Fib bonuses for trend-only signals
+# 3. EARLY_TREND: max 50, WATCH only
+# Structure              Max Score   EW Bonus   Fib Bonus
+# TREND_CONTINUATION         55         0          0
+# IMPULSE_W3_LIKELY          55         0          0
+# EARLY_TREND                50         0          0
+# EW_W2/W4                  100        25         15
+# ABC_ZIGZAG                100        25         15
+# WXYXZ                      95        20         12
+# EXPANDED_FLAT              90        18         10
+# RUNNING_CORRECTION         85        15          8
+# DOUBLE_BOTTOM            80        12          8
+# FALLING_WEDGE              75        10          5
 # ═══════════════════════════════════════════════════════════════════
 def score_structure_v6(struct, rsi_val, macd_bull, vol_dec, vol_exp, stoch, trend):
     if not struct or struct.get("type", "UNKNOWN") == "UNKNOWN":
@@ -959,8 +954,6 @@ def score_structure_v6(struct, rsi_val, macd_bull, vol_dec, vol_exp, stoch, tren
     sub = struct.get("sub_type", "")
 
     # ── 1. HARD MAX CEILING ──
-    # Fix: TREND_CONTINUATION capped at 55 — no EW/Fib bonuses
-    # Fix: EARLY_TREND capped at 50, WATCH only
     if t == "TREND_CONTINUATION":
         if sub == "IMPULSE_W3_LIKELY":
             max_score = 55
@@ -983,7 +976,7 @@ def score_structure_v6(struct, rsi_val, macd_bull, vol_dec, vol_exp, stoch, tren
     else:
         max_score = 70
 
-    # ── 2. BASE SCORE (structure quality) ──
+    # ── 2. BASE SCORE ──
     base = 0
     if t == "TREND_CONTINUATION":
         base = 20
@@ -997,7 +990,6 @@ def score_structure_v6(struct, rsi_val, macd_bull, vol_dec, vol_exp, stoch, tren
             base += 5
     elif t == "WXYXZ":
         base = 22
-        # X1=X2 symmetry bonus
         wx_ratio = struct.get("wx_ratio", 0)
         if 90 <= wx_ratio <= 110:
             base += 8
@@ -1052,17 +1044,15 @@ def score_structure_v6(struct, rsi_val, macd_bull, vol_dec, vol_exp, stoch, tren
     else:
         base = 15
 
-    # ── 3. EW BONUS (wave validation) ──
+    # ── 3. EW BONUS ──
     ew = 0
     if t in ("EW_W4", "EW_W2"):
-        # W3 > W1 rule
         w1 = struct.get("w1", 0)
         w3 = struct.get("w3", 0)
         if w3 >= w1 * 1.0:
             ew += 12
         elif w3 >= w1 * 0.8:
             ew += 6
-        # W2/W4 alternation
         w2r = struct.get("w2_ret", 0)
         w4r = struct.get("w4_ret", 0)
         if t == "EW_W4" and w2r > 0 and w4r > 0:
@@ -1070,10 +1060,8 @@ def score_structure_v6(struct, rsi_val, macd_bull, vol_dec, vol_exp, stoch, tren
                 ew += 8
             elif abs(w2r - w4r) / max(w2r, w4r) > 0.3:
                 ew += 4
-        ew += 5  # base EW validation
+        ew += 5
     elif t == "ABC_ZIGZAG":
-        # A-B-C proportion
-        wa_range = struct.get("wa_range", 0)
         c_progress = struct.get("c_progress", 0)
         if c_progress >= 100:
             ew += 15
@@ -1081,29 +1069,24 @@ def score_structure_v6(struct, rsi_val, macd_bull, vol_dec, vol_exp, stoch, tren
             ew += 10
         elif c_progress >= 60:
             ew += 5
-        # C = A time/price symmetry
         if struct.get("c_confirmed"):
             ew += 10
-        ew += 0  # no extra base
     elif t == "WXYXZ":
-        # X-wave equality
         ew += 10
         if struct.get("wx_ratio", 0) and 90 <= struct.get("wx_ratio", 0) <= 110:
             ew += 10
     elif t == "TREND_CONTINUATION":
         # Fix: No EW bonus for trend-only signals
-        # EW compliance is reserved for real EW structures (EW_W2/W4, ABC, WXYXZ)
         ew += 0
     elif t in ("EXPANDED_FLAT", "RUNNING_CORRECTION"):
         ew += 12
-        # B beyond A start
         if t == "EXPANDED_FLAT":
             wb_top = struct.get("wb_top", 0)
             w5_top = struct.get("w5_top", 0)
             if wb_top > w5_top:
                 ew += 6
     elif t in ("DOUBLE_BOTTOM", "FALLING_WEDGE"):
-        ew += 8  # pattern structure only
+        ew += 8
     else:
         ew += 5
 
@@ -1125,7 +1108,6 @@ def score_structure_v6(struct, rsi_val, macd_bull, vol_dec, vol_exp, stoch, tren
             fib = 10
         elif r <= 0.618:
             fib = 5
-        # Blue box (0.618-0.786 of W3)
         if struct.get("in_blue_box"):
             fib += 5
     elif t == "ABC_ZIGZAG":
@@ -1133,24 +1115,20 @@ def score_structure_v6(struct, rsi_val, macd_bull, vol_dec, vol_exp, stoch, tren
             fib = 15
         else:
             fib = 8
-        # C = A target proximity
         c_eq_a_tgt = struct.get("c_eq_a_tgt", 0)
         wc_bot = struct.get("wc_bot", 0)
         if c_eq_a_tgt and wc_bot and abs(wc_bot - c_eq_a_tgt) / max(abs(c_eq_a_tgt), 0.0001) < 0.03:
             fib += 5
     elif t == "WXYXZ":
         fib = 12
-        # Z-wave fib relation to X
         wx_ratio = struct.get("wx_ratio", 0)
         if 85 <= wx_ratio <= 115:
             fib += 8
     elif t == "TREND_CONTINUATION":
         # Fix: No Fib bonus for trend-only signals
-        # Fibonacci validation is reserved for real EW structures
         fib = 0
     elif t in ("EXPANDED_FLAT",):
         fib = 10
-        # C = 1.236-1.618 of A
         c_progress = struct.get("c_progress", 0)
         if c_progress >= 123.6:
             fib += 5
@@ -1158,13 +1136,12 @@ def score_structure_v6(struct, rsi_val, macd_bull, vol_dec, vol_exp, stoch, tren
         fib = 8
     elif t in ("DOUBLE_BOTTOM",):
         fib = 8
-        # Neckline to bottom = 1.0 projection
     elif t in ("FALLING_WEDGE",):
         fib = 5
     else:
         fib = 5
 
-    # ── 5. VOLUME & MOMENTUM (same for all, capped) ──
+    # ── 5. VOLUME & MOMENTUM ──
     vol = 0
     if vol_dec:
         vol += 5
@@ -1196,7 +1173,6 @@ def score_structure_v6(struct, rsi_val, macd_bull, vol_dec, vol_exp, stoch, tren
     raw_score = base + ew + fib + vol + mom + trend_adj
     score = min(raw_score, max_score)
 
-    # Store the ceiling for transparency
     struct["_max_ceiling"] = max_score
     struct["_raw_score"] = raw_score
     struct["_base"] = base
@@ -1483,60 +1459,30 @@ def build_msg(sig):
     if sig.get("is_locked"):
         locked_str = "🔒 "
 
-    msg = icon + " <b>" + locked_str + sig["type"] + " — " + sig["sym"] + "/USDT</b>
-
-"
-    msg += "📊 Structure: " + sig["struct_label"] + "
-"
-    msg += "📈 Trend: " + sig["trend"] + " | Phase: " + sig["phase"] + "
-"
-    msg += "📏 Position: " + pos_str + "
-
-"
-    msg += "💵 Entry:  " + fp(sig["current"] * 0.99) + " – " + fp(sig["current"] * 1.01) + "
-"
-    msg += "🛑 SL:     " + fp(sig["sl"]) + "
-"
-    msg += "   (" + sig["sl_reason"] + ")
-
-"
-    msg += "🎯 TP1:   " + fp(sig["tp1"]) + "
-"
-    msg += "🎯 TP2:   " + fp(sig["tp2"]) + "
-"
-    msg += "🎯 TP3:   " + fp(sig["tp3"]) + "
-"
-    msg += "🎯 TP4:   " + fp(sig["tp4"]) + "
-
-"
-    msg += "⏱ Hold: " + sig["hold"] + "
-"
-
-    # Score breakdown
-    score = sig.get("score", 0)
-    conf = sig.get("conf", "DEVELOPING")
-    msg += "⚡ Score: " + str(score) + "/100 — " + conf + "
-"
-
-    # Show ceiling info if available
-    if sig.get("_max_ceiling"):
-        msg += "   Ceiling: " + str(sig["_max_ceiling"]) + " | Raw: " + str(sig.get("_raw_score", 0)) + "
-"
-
-    msg += "📊 RSI: " + str(round(sig["rsi"])) + " | Stoch: " + str(round(sig["stoch"])) + "
-"
-    msg += "🌊 Regime: " + sig["regime"] + "
-"
+    msg = icon + " <b>" + locked_str + sig["type"] + " — " + sig["sym"] + "/USDT</b>\n\n"
+    msg += "📊 Structure: " + sig["struct_label"] + "\n"
+    msg += "📈 Trend: " + sig["trend"] + " | Phase: " + sig["phase"] + "\n"
+    msg += "📏 Position: " + pos_str + "\n\n"
+    msg += "💵 Entry:  " + fp(sig["current"] * 0.99) + " – " + fp(sig["current"] * 1.01) + "\n"
+    msg += "🛑 SL:     " + fp(sig["sl"]) + "\n"
+    msg += "   (" + sig["sl_reason"] + ")\n\n"
+    msg += "🎯 TP1:   " + fp(sig["tp1"]) + "\n"
+    msg += "🎯 TP2:   " + fp(sig["tp2"]) + "\n"
+    msg += "🎯 TP3:   " + fp(sig["tp3"]) + "\n"
+    msg += "🎯 TP4:   " + fp(sig["tp4"]) + "\n\n"
+    msg += "⏱ Hold: " + sig["hold"] + "\n"
+    msg += "⚡ Score: " + str(sig["score"]) + "/100 — " + sig["conf"] + "\n"
+    msg += "📊 RSI: " + str(round(sig["rsi"])) + " | Stoch: " + str(round(sig["stoch"])) + "\n"
+    msg += "🌊 Regime: " + sig["regime"] + "\n"
 
     if sig.get("divergence"):
-        msg += "🔄 Bullish Divergence detected
-"
+        msg += "🔄 Bullish Divergence detected\n"
 
     if sig.get("alternate"):
-        msg += "⚠️ Alternate: " + sig["alternate"] + "
-"
+        msg += "⚠️ Alternate: " + sig["alternate"] + "\n"
 
     return msg
+
 def build_watch_msg(sym, sig_type, current, score, rsi, struct_label, reason, position_size=0):
     icon = "⚡" if sig_type == "SCALP" else "📈"
     msg = "👁 <b>WATCH — " + sym + "/USDT (" + sig_type + ")</b>\n\n"
