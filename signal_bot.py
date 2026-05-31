@@ -2415,7 +2415,6 @@ def main():
             msg = msg + "Active: " + str(active_count) + "\n"
             msg = msg + datetime.now().strftime("%Y-%m-%d %H:%M") + " UTC"
             send_msg(msg)
-
 if __name__ == "__main__":
     try:
         main()
