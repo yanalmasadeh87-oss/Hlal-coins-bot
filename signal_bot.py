@@ -457,7 +457,7 @@ def htf_validation(sym):
         trend = "bull" if w_cur > w_ma20 else "neutral" if w_cur > w_ma50 else "bear"
         return True, "HTF OK: Weekly " + trend
     except:
-        return True, "HTF: Error — passing"
+        return True, "HTF: Error - passing"
 
 # ═══════════════════════════════════════════════════════════════════
 # FIBONACCI & PATTERN TOOLS
@@ -561,7 +561,7 @@ def detect_wxyxz(pivots, current):
     return best if best else (False, 0, 0, "")
 
 # ═══════════════════════════════════════════════════════════════════
-# TREND CONTINUATION — NEW
+# TREND CONTINUATION - NEW
 # ═══════════════════════════════════════════════════════════════════
 def detect_trend_continuation(prices, highs, lows, pivots, current, trend, htf_prices):
     if len(prices) < 30: return None
@@ -629,7 +629,7 @@ def detect_trend_continuation(prices, highs, lows, pivots, current, trend, htf_p
         }
 
 # ═══════════════════════════════════════════════════════════════════
-# STRUCTURE MEMORY — NEW
+# STRUCTURE MEMORY - NEW
 # ═══════════════════════════════════════════════════════════════════
 def check_structure_memory(sym, sig_type, current, pivots):
     key = sym + "_" + sig_type
@@ -683,7 +683,7 @@ def update_structure_memory(sym, sig_type, structure, pivots):
 
 
 # ═══════════════════════════════════════════════════════════════════
-# MAIN STRUCTURE RECOGNIZER — REAL FIXES APPLIED
+# MAIN STRUCTURE RECOGNIZER - REAL FIXES APPLIED
 # Fix 1: TREND_CONTINUATION capped at 70, EARLY_TREND at 55
 # Fix 2: Phase override REMOVED - don't replace real corrections with trend
 # Fix 3: Fallback REMOVED - return UNKNOWN if no structure found
@@ -705,7 +705,7 @@ def recognize_chart_structure(prices, highs, lows, pivots, current, pct_ath,
         s["confidence_score"] = score_structure_v6(s, rsi_val, macd_bull, vol_dec, vol_exp, stoch, trend)
         candidates.append(s)
 
-    # CANDIDATE 1: Trend Continuation — capped at 70 max
+    # CANDIDATE 1: Trend Continuation - capped at 70 max
     trend_cont = detect_trend_continuation(prices, highs, lows, pivots, current, trend, htf_prices)
     if trend_cont:
         # Cap the score so it never outranks a confirmed ABC or WXYXZ
@@ -717,7 +717,7 @@ def recognize_chart_structure(prices, highs, lows, pivots, current, pct_ath,
     classical = detect_classical_patterns(prices, pivots, current)
     if classical:
         if classical.get("type") == "DOUBLE_TOP":
-            return {"type": "DOUBLE_TOP", "label": "Double Top — No Long Signal",
+            return {"type": "DOUBLE_TOP", "label": "Double Top - No Long Signal",
                     "confidence_score": 0, "sit_applicable": [], "sit_na": [], "phase": phase}
         add_candidate({
             "type": classical["type"], "label": classical["label"],
@@ -882,7 +882,7 @@ def recognize_chart_structure(prices, highs, lows, pivots, current, pct_ath,
 
         break
 
-    # NO PHASE OVERRIDE — Fix 2 applied
+    # NO PHASE OVERRIDE - Fix 2 applied
     # Shallow pullbacks are corrections, not trend continuation
 
     # Check memory
@@ -895,7 +895,7 @@ def recognize_chart_structure(prices, highs, lows, pivots, current, pct_ath,
         else:
             candidates.append(mem)
 
-    # NO FALLBACK — Fix 3 applied
+    # NO FALLBACK - Fix 3 applied
     # If no structure found, return UNKNOWN (don't generate fake signals)
     if not candidates:
         return {"type": "UNKNOWN", "label": "No valid structure found", "confidence_score": 0,
@@ -929,7 +929,7 @@ def recognize_chart_structure(prices, highs, lows, pivots, current, pct_ath,
 # SCORING ENGINE V6
 # ═══════════════════════════════════════════════════════════════════
 # ═══════════════════════════════════════════════════════════════════
-# SCORING ENGINE V6 — HARD MAX CEILINGS PER STRUCTURE TYPE
+# SCORING ENGINE V6 - HARD MAX CEILINGS PER STRUCTURE TYPE
 # AGREED FIXES:
 # 1. TREND_CONTINUATION max = 55 (was 65-70)
 # 2. No EW/Fib bonuses for trend-only signals
@@ -1418,7 +1418,7 @@ def analyze(coin, signal_type="swing"):
             "current": current, "score": final_score, "rsi": rsi_val, "stoch": stoch,
             "struct_label": struct_label, "struct_type": struct_type,
             "position_size": position_size,
-            "reason": "Developing — " + struct_label + " (score " + str(final_score) + "/100)"
+            "reason": "Developing - " + struct_label + " (score " + str(final_score) + "/100)"
         }
 
     return {
@@ -1436,7 +1436,7 @@ def analyze(coin, signal_type="swing"):
     }
 
 # ═══════════════════════════════════════════════════════════════════
-# FORMATTING — NO F-STRINGS, ALL CONCATENATION
+# FORMATTING - NO F-STRINGS, ALL CONCATENATION
 # ═══════════════════════════════════════════════════════════════════
 def fp(p):
     if not p and p != 0:
@@ -1459,11 +1459,11 @@ def build_msg(sig):
     if sig.get("is_locked"):
         locked_str = "🔒 "
 
-    msg = icon + " <b>" + locked_str + sig["type"] + " — " + sig["sym"] + "/USDT</b>\n\n"
+    msg = icon + " <b>" + locked_str + sig["type"] + " - " + sig["sym"] + "/USDT</b>\n\n"
     msg += "📊 Structure: " + sig["struct_label"] + "\n"
     msg += "📈 Trend: " + sig["trend"] + " | Phase: " + sig["phase"] + "\n"
     msg += "📏 Position: " + pos_str + "\n\n"
-    msg += "💵 Entry:  " + fp(sig["current"] * 0.99) + " – " + fp(sig["current"] * 1.01) + "\n"
+    msg += "💵 Entry:  " + fp(sig["current"] * 0.99) + " - " + fp(sig["current"] * 1.01) + "\n"
     msg += "🛑 SL:     " + fp(sig["sl"]) + "\n"
     msg += "   (" + sig["sl_reason"] + ")\n\n"
     msg += "🎯 TP1:   " + fp(sig["tp1"]) + "\n"
@@ -1471,7 +1471,7 @@ def build_msg(sig):
     msg += "🎯 TP3:   " + fp(sig["tp3"]) + "\n"
     msg += "🎯 TP4:   " + fp(sig["tp4"]) + "\n\n"
     msg += "⏱ Hold: " + sig["hold"] + "\n"
-    msg += "⚡ Score: " + str(sig["score"]) + "/100 — " + sig["conf"] + "\n"
+    msg += "⚡ Score: " + str(sig["score"]) + "/100 - " + sig["conf"] + "\n"
     msg += "📊 RSI: " + str(round(sig["rsi"])) + " | Stoch: " + str(round(sig["stoch"])) + "\n"
     msg += "🌊 Regime: " + sig["regime"] + "\n"
 
@@ -1485,12 +1485,12 @@ def build_msg(sig):
 
 def build_watch_msg(sym, sig_type, current, score, rsi, struct_label, reason, position_size=0):
     icon = "⚡" if sig_type == "SCALP" else "📈"
-    msg = "👁 <b>WATCH — " + sym + "/USDT (" + sig_type + ")</b>\n\n"
+    msg = "👁 <b>WATCH - " + sym + "/USDT (" + sig_type + ")</b>\n\n"
     msg += "Pattern: " + struct_label + "\n"
     msg += "Price: " + fp(current) + " | RSI: " + str(round(rsi)) + "\n"
     msg += "Score: " + str(score) + "/100 | Suggested: " + str(position_size) + "%\n"
     msg += "Status: " + reason + "\n\n"
-    msg += "<i>Not a signal yet — monitoring</i>"
+    msg += "<i>Not a signal yet - monitoring</i>"
     return msg
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1525,7 +1525,7 @@ def check_price_alerts():
 
         if current <= sl and not trade.get("closed"):
             loss = (current - entry) / entry * 100
-            msg = "🔴 <b>STOP LOSS — " + sym + "/USDT</b>\n"
+            msg = "🔴 <b>STOP LOSS - " + sym + "/USDT</b>\n"
             msg += icon + " " + sig_type + " Closed\n"
             msg += "Price: " + fp(current) + " | SL: " + fp(sl) + "\n"
             msg += "Loss: " + str(round(loss, 1)) + "%\n"
@@ -1536,7 +1536,7 @@ def check_price_alerts():
 
         if current >= tp1 and not trade.get("hit_tp1"):
             profit = (current - entry) / entry * 100
-            msg = "🎯 <b>TP1 HIT — " + sym + "/USDT</b>\n"
+            msg = "🎯 <b>TP1 HIT - " + sym + "/USDT</b>\n"
             msg += "Price: " + fp(current) + "\n"
             msg += "Profit: +" + str(round(profit, 1)) + "%\n"
             msg += "Exit 25% | SL → entry: " + fp(entry)
@@ -1546,7 +1546,7 @@ def check_price_alerts():
 
         if current >= tp2 and not trade.get("hit_tp2"):
             profit = (current - entry) / entry * 100
-            msg = "🎯 <b>TP2 HIT — " + sym + "/USDT</b>\n"
+            msg = "🎯 <b>TP2 HIT - " + sym + "/USDT</b>\n"
             msg += "Price: " + fp(current) + "\n"
             msg += "Profit: +" + str(round(profit, 1)) + "%\n"
             msg += "Exit 25% | SL → TP1: " + fp(tp1)
@@ -1556,7 +1556,7 @@ def check_price_alerts():
 
         if current >= tp3 and not trade.get("hit_tp3"):
             profit = (current - entry) / entry * 100
-            msg = "🎯 <b>TP3 HIT — " + sym + "/USDT</b>\n"
+            msg = "🎯 <b>TP3 HIT - " + sym + "/USDT</b>\n"
             msg += "Price: " + fp(current) + "\n"
             msg += "Profit: +" + str(round(profit, 1)) + "%\n"
             msg += "Exit 25% | SL → TP2: " + fp(tp2)
@@ -1566,7 +1566,7 @@ def check_price_alerts():
 
         if current >= tp4 and not trade.get("hit_tp4"):
             profit = (current - entry) / entry * 100
-            msg = "🏆 <b>TP4 HIT — " + sym + "/USDT</b>\n"
+            msg = "🏆 <b>TP4 HIT - " + sym + "/USDT</b>\n"
             msg += "Price: " + fp(current) + "\n"
             msg += "Full profit: +" + str(round(profit, 1)) + "%! | Trade complete!"
             send_msg(msg)
@@ -1630,14 +1630,14 @@ def main():
     t3 = [c["sym"] for c in HALAL_WATCHLIST if c["tier"] == 3]
 
     print("=" * 60)
-    print("EW STRATEGY V6 — ADAPTIVE STRUCTURE-AWARE BOT")
+    print("EW STRATEGY V6 - ADAPTIVE STRUCTURE-AWARE BOT")
     print(str(total) + " coins | Trend continuation | Memory locks")
     print("=" * 60)
 
     if tg_ok:
-        msg = "🕒 <b>EW Strategy V6 — Active</b>\n"
+        msg = "🕒 <b>EW Strategy V6 - Active</b>\n"
         msg += "━━━━━━━━━━━━━━━━━━━\n"
-        msg += "✅ Adaptive — Chart decides the method\n"
+        msg += "✅ Adaptive - Chart decides the method\n"
         msg += "📊 Volatility regime detection\n"
         msg += "🔄 Trend continuation detection (NEW)\n"
         msg += "🔒 Structure memory (anti flip-flop)\n"
@@ -1649,7 +1649,7 @@ def main():
         msg += "⭐ T3 (" + str(len(t3)) + "): " + ", ".join(t3[:8]) + "..."
         send_msg(msg)
     else:
-        print("Telegram not configured — running in console-only mode.")
+        print("Telegram not configured - running in console-only mode.")
 
     while True:
         scan_count += 1
@@ -1739,7 +1739,7 @@ def main():
                 print("err:" + str(e))
                 time.sleep(5)
 
-        print("\nScan #" + str(scan_count) + " — " + str(signals) + " signal(s), " + str(watches) + " watch(es) — next in 15min")
+        print("\nScan #" + str(scan_count) + " - " + str(signals) + " signal(s), " + str(watches) + " watch(es) - next in 15min")
         active_count = len([t for t in active_trades.values() if not t.get("closed")])
         print("  Active trades: " + str(active_count) + " | Watch list: " + str(len(sent_watches)))
 
