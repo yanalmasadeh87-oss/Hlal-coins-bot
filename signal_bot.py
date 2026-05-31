@@ -83,8 +83,8 @@ def start_api_server():
 # ================================================================
 # CONFIGURATION
 # ================================================================
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "7975488031:AAHLdeNTM-YIItriXwradU4bPyCMdR-mAIY")
-CHAT_ID        = os.getenv("TELEGRAM_CHAT_ID", "8422276082")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+CHAT_ID        = os.getenv("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID_HERE")
 
 BN_BASE        = "https://api.binance.com/api/v3"
 TG_BASE        = None
@@ -223,13 +223,15 @@ def fetch_market_context():
         if len(_ctx_history) > 48: _ctx_history.pop(0)
 
         def get_trend(key):
-            if len(_ctx_history) < 4: return "NEUTRAL"
+            # 48 readings = 12 hours. 3% threshold filters out normal noise.
+            if len(_ctx_history) < 48: return "NEUTRAL"
             old = _ctx_history[0][key]; new = _ctx_history[-1][key]
             if old == 0: return "NEUTRAL"
             chg = (new - old) / old * 100
-            return "RISING" if chg > 1.5 else "FALLING" if chg < -1.5 else "NEUTRAL"
+            return "RISING" if chg > 3.0 else "FALLING" if chg < -3.0 else "NEUTRAL"
 
         ctx["btc_dom_trend"] = get_trend("btc_dom")
+        ctx["history_len"]   = len(_ctx_history)
         ctx["total_trend"] = get_trend("total")
         ctx["total3_trend"] = get_trend("total3")
         print("  CTX: BTC.D=" + str(round(btc_dom,1)) + "% FG=" + str(fg_now) + "(" + fg_zone + ") TOTAL=" + ctx["total_trend"])
@@ -269,29 +271,34 @@ def hard_market_filter(sym, ctx):
     if not ctx:
         return True, "No market context"
 
-    fg = ctx.get("fg_now", 50)
-    fg_zone = ctx.get("fg_zone", "NEUTRAL")
-    total_trend = ctx.get("total_trend", "NEUTRAL")
-    btc_dom = ctx.get("btc_dom", 50)
+    fg            = ctx.get("fg_now", 50)
+    fg_zone       = ctx.get("fg_zone", "NEUTRAL")
+    total_trend   = ctx.get("total_trend", "NEUTRAL")
+    btc_dom       = ctx.get("btc_dom", 50)
     btc_dom_trend = ctx.get("btc_dom_trend", "NEUTRAL")
-    total3_trend = ctx.get("total3_trend", "NEUTRAL")
+    total3_trend  = ctx.get("total3_trend", "NEUTRAL")
+    history_len   = ctx.get("history_len", 0)
 
+    # Only apply trend filters after enough history (at least 8 readings = 2 hours)
+    enough_history = history_len >= 48  # 48 readings = 12 hours of real trend data
+
+    # Rule 1: Extreme Fear — hard block everything
     if fg <= 20 and fg_zone == "EXTREME_FEAR":
-        return False, "HARD FILTER: Extreme Fear (FG=" + str(fg) + ") - Market panic, no entries"
+        return False, "HARD FILTER: Extreme Fear (FG=" + str(fg) + ") — no entries"
 
-    if total_trend == "FALLING" and sym not in ("BTC", "ETH"):
-        return False, "HARD FILTER: Total market falling - Altcoin season over"
+    # Rule 2: TOTAL falling — block altcoins (only if enough history)
+    if enough_history and total_trend == "FALLING" and sym not in ("BTC", "ETH"):
+        return False, "HARD FILTER: TOTAL falling — " + sym + " blocked"
 
-    if btc_dom > 55 and btc_dom_trend == "RISING" and sym not in ("BTC", "ETH"):
-        return False, "HARD FILTER: BTC.D=" + str(btc_dom) + "% rising - Alt bloodbath"
+    # Rule 3: BTC.D > 58% and rising — block altcoins (raised from 55% to 58%)
+    if btc_dom > 58 and btc_dom_trend == "RISING" and sym not in ("BTC", "ETH"):
+        return False, "HARD FILTER: BTC.D=" + str(round(btc_dom,1)) + "% rising — " + sym + " blocked"
 
-    if total3_trend == "FALLING" and btc_dom_trend == "RISING" and sym != "BTC":
-        return False, "HARD FILTER: TOTAL3 falling + BTC.D rising - Only BTC survives"
+    # Rule 4: TOTAL3 falling + BTC.D rising — only BTC (only if enough history)
+    if enough_history and total3_trend == "FALLING" and btc_dom_trend == "RISING" and sym != "BTC":
+        return False, "HARD FILTER: TOTAL3 falling + BTC.D rising — only BTC allowed"
 
-    if fg <= 40 and fg_zone == "FEAR":
-        return True, "WARNING: Fear zone (FG=" + str(fg) + ") - Reduced position size recommended"
-
-    return True, "Market OK - " + str(btc_dom) + "% BTC.D | FG=" + str(fg) + " | Total=" + total_trend
+    return True, "Market OK — BTC.D=" + str(round(btc_dom,1)) + "% FG=" + str(fg) + " Total=" + total_trend
 
 # ================================================================
 # INDICATORS
@@ -1987,26 +1994,16 @@ def analyze(coin, signal_type="swing"):
         print("    " + degree_info)
         return None
 
-    # LAZY-LOAD MTF: Only fetch after all filters passed
-    # Each timeframe slot uses its own real data
+    # LAZY-LOAD MTF: Only fetch 1H for coins that passed all filters
     mtf_alignment = None
     if struct_type not in ("TREND_CONTINUATION",) or conf_score >= 50:
         h1_prices, h1_highs, h1_lows, h1_vols, h1_opens = fetch_klines_full(sym, "1h", 500)
         if len(h1_prices) >= 50:
-            if signal_type == "swing":
-                h4_p, h4_h, h4_l, h4_v, h4_o = fetch_klines_full(sym, "4h", 500)
-                mtf_data = {
-                    "1d": {"prices": prices,    "highs": highs,   "lows": lows,   "vols": vols,   "opens": opens},
-                    "4h": {"prices": h4_p,      "highs": h4_h,    "lows": h4_l,   "vols": h4_v,   "opens": h4_o},
-                    "1h": {"prices": h1_prices, "highs": h1_highs,"lows": h1_lows,"vols": h1_vols,"opens": h1_opens}
-                }
-            else:
-                d1_p, d1_h, d1_l, d1_v, d1_o = fetch_klines_full(sym, "1d", 200)
-                mtf_data = {
-                    "1d": {"prices": d1_p,      "highs": d1_h,    "lows": d1_l,   "vols": d1_v,   "opens": d1_o},
-                    "4h": {"prices": prices,    "highs": highs,   "lows": lows,   "vols": vols,   "opens": opens},
-                    "1h": {"prices": h1_prices, "highs": h1_highs,"lows": h1_lows,"vols": h1_vols,"opens": h1_opens}
-                }
+            mtf_data = {
+                "1d": {"prices": prices, "highs": highs, "lows": lows, "vols": vols, "opens": opens},
+                "4h": {"prices": prices, "highs": highs, "lows": lows, "vols": vols, "opens": opens},
+                "1h": {"prices": h1_prices, "highs": h1_highs, "lows": h1_lows, "vols": h1_vols, "opens": h1_opens}
+            }
             mtf_alignment = check_mtf_alignment(mtf_data)
 
     # RE-SCORE with MTF data if available
@@ -2108,6 +2105,39 @@ def build_msg(sig):
     msg += "🎯 TP4:   " + fp(sig["tp4"]) + "  (" + tp_l[3] + ")\n\n"
     msg += "⏱ Hold: " + sig["hold"] + "\n"
     msg += "⚡ Score: " + str(sig["score"]) + "/100 — " + sig["conf"]
+    return msg
+
+def build_msg_OLD_UNUSED(sig):
+    is_sc = sig["type"] == "SCALP"
+    icon = "[SCALP]" if is_sc else "[SWING]"
+    pos = sig.get("position_size", 50)
+    pos_str = str(pos) + "% Position" if pos < 100 else "Full Position"
+
+    locked_str = ""
+    if sig.get("is_locked"):
+        locked_str = "[LOCKED] "
+
+    msg = icon + " " + locked_str + sig["type"] + " - " + sig["sym"] + "/USDT\n\n"
+    msg = msg + "Structure: " + sig["struct_label"] + "\n"
+    msg = msg + "Trend: " + sig["trend"] + " | Phase: " + sig["phase"] + "\n"
+    msg = msg + "Position: " + pos_str + "\n\n"
+    msg = msg + "Entry:  " + fp(sig["current"] * 0.99) + " - " + fp(sig["current"] * 1.01) + "\n"
+    msg = msg + "SL:     " + fp(sig["sl"]) + "\n"
+    msg = msg + "   (" + sig["sl_reason"] + ")\n\n"
+    msg = msg + "TP1:   " + fp(sig["tp1"]) + "\n"
+    msg = msg + "TP2:   " + fp(sig["tp2"]) + "\n"
+    msg = msg + "TP3:   " + fp(sig["tp3"]) + "\n"
+    msg = msg + "TP4:   " + fp(sig["tp4"]) + "\n\n"
+    msg = msg + "Hold: " + sig["hold"] + "\n"
+    msg = msg + "Score: " + str(sig["score"]) + "/100 - " + sig["conf"] + "\n"
+    msg = msg + "RSI: " + str(round(sig["rsi"])) + " | Stoch: " + str(round(sig["stoch"])) + "\n"
+    msg = msg + "Regime: " + sig["regime"] + "\n"
+    if sig.get("divergence"):
+        msg = msg + "Bullish Divergence detected\n"
+
+    if sig.get("alternate"):
+        msg = msg + "Alternate: " + sig["alternate"] + "\n"
+
     return msg
 
 def build_watch_msg(sym, sig_type, current, score, rsi, struct_label, reason, position_size=0, extra_info=None):
@@ -2415,6 +2445,7 @@ def main():
             msg = msg + "Active: " + str(active_count) + "\n"
             msg = msg + datetime.now().strftime("%Y-%m-%d %H:%M") + " UTC"
             send_msg(msg)
+
 if __name__ == "__main__":
     try:
         main()
