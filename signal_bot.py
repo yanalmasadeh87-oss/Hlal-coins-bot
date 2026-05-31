@@ -12,7 +12,7 @@ from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
-API_PORT = 8080
+API_PORT = int(os.getenv("PORT", 8080))
 
 def start_api_server():
     """Starts a lightweight HTTP server to serve bot data to the dashboard."""
