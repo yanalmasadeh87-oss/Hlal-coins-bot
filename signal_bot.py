@@ -3,7 +3,14 @@ import time
 import math
 import os
 import json
+import sys
 from datetime import datetime
+
+# Force unbuffered output so Render shows logs immediately
+sys.stdout.reconfigure(line_buffering=True)
+import functools
+import builtins
+print = functools.partial(builtins.print, flush=True)
 
 
 # ================================================================
