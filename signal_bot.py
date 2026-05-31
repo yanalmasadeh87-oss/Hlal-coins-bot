@@ -83,8 +83,8 @@ def start_api_server():
 # ================================================================
 # CONFIGURATION
 # ================================================================
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-CHAT_ID        = os.getenv("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID_HERE")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "7975488031:AAHLdeNTM-YIItriXwradU4bPyCMdR-mAIY")
+CHAT_ID        = os.getenv("TELEGRAM_CHAT_ID", "8422276082")
 
 BN_BASE        = "https://api.binance.com/api/v3"
 TG_BASE        = None
@@ -171,7 +171,8 @@ def fetch_klines_full(sym, interval="1d", limit=365):
         vols=[float(k[5]) for k in data]
         opens=[float(k[1]) for k in data]
         return prices,highs,lows,vols,opens
-    except:
+    except Exception as e:
+        print("  Fetch error " + sym + " " + interval + ": " + str(e)[:60])
         return [],[],[],[],[]
 
 def fetch_global_ath(sym):
@@ -441,11 +442,15 @@ def detect_candlestick_patterns(opens, highs, lows, closes):
                     patterns.append("BEAR_ENGULFING")
                     bearish_score += 4
 
-        # Doji
+        # Doji — context-aware: bullish only at correction lows
         if body / total_range < 0.1:
             patterns.append("DOJI")
+            # Only add bullish score if price is below recent average (correction context)
             if i == len(closes) - 1:
-                bullish_score += 1
+                avg = sum(closes[-10:]) / min(len(closes), 10)
+                if closes[i] < avg:  # at correction low — bullish doji
+                    bullish_score += 1
+                # at rally high — doji is bearish warning, ignore for long signals
 
         # Morning star / Evening star (3-candle)
         if i >= 2:
@@ -554,7 +559,13 @@ def detect_triangle(prices, highs, lows, pivots):
         high_slope = (recent_peaks[-1]["price"] - recent_peaks[-3]["price"]) / (recent_peaks[-1]["idx"] - recent_peaks[-3]["idx"])
         low_slope = (recent_troughs[-1]["price"] - recent_troughs[-3]["price"]) / (recent_troughs[-1]["idx"] - recent_troughs[-3]["idx"])
 
-        apex_idx = recent_peaks[-1]["idx"] + int((recent_troughs[-1]["price"] - recent_peaks[-1]["price"]) / (high_slope - low_slope)) if (high_slope - low_slope) != 0 else 0
+        # Safe apex calculation with bounds check
+        if (high_slope - low_slope) != 0:
+            raw_apex = recent_peaks[-1]["idx"] + int(
+                (recent_troughs[-1]["price"] - recent_peaks[-1]["price"]) / (high_slope - low_slope))
+            apex_idx = max(0, min(raw_apex, len(prices) * 3))  # bounds check
+        else:
+            apex_idx = 0
 
         current = prices[-1]
         triangle_range = recent_peaks[-1]["price"] - recent_troughs[-1]["price"]
@@ -1916,6 +1927,7 @@ def analyze(coin, signal_type="swing"):
     phase = read_market_phase(prices, highs, lows, pivots, current, pct_ath)
 
     if phase == "DOWNTREND":
+        print("    [" + signal_type + "] " + sym + " BLOCKED: DOWNTREND phase")
         return None
 
     rsi_val = calc_rsi(prices)
@@ -1946,6 +1958,7 @@ def analyze(coin, signal_type="swing"):
     in_correction = pct_ath < -20
     daily_bull = current > (sum(prices[-50:]) / 50 if len(prices) >= 50 else current) or in_correction
     if not daily_bull:
+        print("    [" + signal_type + "] " + sym + " BLOCKED: not daily bullish MA50=" + str(round(ma50,2)) + " current=" + str(round(current,2)))
         return None
 
     # MTF data lazy-loaded AFTER structure + hard filters pass
@@ -1973,6 +1986,7 @@ def analyze(coin, signal_type="swing"):
     conf_score = chart.get("confidence_score", 0)
 
     if struct_type in ("DOWNTREND", "DOUBLE_TOP", "UNKNOWN"):
+        print("    [" + signal_type + "] " + sym + " BLOCKED: struct=" + struct_type + " score=" + str(conf_score))
         return None
 
     # HARD FILTERS: Run IMMEDIATELY after structure detection, BEFORE scoring/MTF
@@ -2018,6 +2032,7 @@ def analyze(coin, signal_type="swing"):
     final_score = max(0, min(100, conf_score + ctx_adj + degree_bonus))
 
     if final_score < 35:
+        print("    [" + signal_type + "] " + sym + " BLOCKED: score too low=" + str(final_score))
         return None
 
     if rsi_val > 75:
@@ -2092,53 +2107,41 @@ def fp(p):
     return "$" + "{:.7f}".format(p)
 
 def build_msg(sig):
-    is_sc = sig["type"] == "SCALP"
-    icon  = "⚡" if is_sc else "📈"
-    tp_l  = ["+3%","+5%","+8%","+12%"] if is_sc else ["+5%","+10%","+15%","+20%"]
-    sl_l  = "-3%" if is_sc else "-5%"
+    # Dynamic TP/SL percentages calculated from actual prices
+    is_sc   = sig["type"] == "SCALP"
+    icon    = "⚡" if is_sc else "📈"
+    entry   = sig["current"]
+
+    def pct(tp):
+        if not tp or not entry or entry == 0: return ""
+        return "(" + ("+" if tp > entry else "") + str(round((tp - entry) / entry * 100, 1)) + "%)"
+
+    def sl_pct():
+        sl = sig.get("sl", 0)
+        if not sl or not entry or entry == 0: return ""
+        return "(" + str(round((sl - entry) / entry * 100, 1)) + "%)"
+
+    rr = ""
+    sl = sig.get("sl", 0)
+    tp2 = sig.get("tp2", 0)
+    if sl and tp2 and entry and sl != entry:
+        risk   = abs(entry - sl)
+        reward = abs(tp2 - entry)
+        if risk > 0:
+            rr = " | R:R 1:" + str(round(reward / risk, 1))
+
     msg  = icon + " <b>" + sig["type"] + " — " + sig["sym"] + "/USDT</b>\n\n"
-    msg += "💵 Entry:  " + fp(sig["current"] * 0.99) + " – " + fp(sig["current"] * 1.01) + "\n"
-    msg += "🛑 SL:     " + fp(sig["sl"]) + "  (" + sl_l + ")\n\n"
-    msg += "🎯 TP1:   " + fp(sig["tp1"]) + "  (" + tp_l[0] + ")\n"
-    msg += "🎯 TP2:   " + fp(sig["tp2"]) + "  (" + tp_l[1] + ")\n"
-    msg += "🎯 TP3:   " + fp(sig["tp3"]) + "  (" + tp_l[2] + ")\n"
-    msg += "🎯 TP4:   " + fp(sig["tp4"]) + "  (" + tp_l[3] + ")\n\n"
+    msg += "💵 Entry:  " + fp(entry * 0.99) + " – " + fp(entry * 1.01) + "\n"
+    msg += "🛑 SL:     " + fp(sig["sl"]) + "  " + sl_pct() + rr + "\n\n"
+    msg += "🎯 TP1:   " + fp(sig["tp1"]) + "  " + pct(sig["tp1"]) + "\n"
+    msg += "🎯 TP2:   " + fp(sig["tp2"]) + "  " + pct(sig["tp2"]) + "\n"
+    msg += "🎯 TP3:   " + fp(sig["tp3"]) + "  " + pct(sig["tp3"]) + "\n"
+    msg += "🎯 TP4:   " + fp(sig["tp4"]) + "  " + pct(sig["tp4"]) + "\n\n"
     msg += "⏱ Hold: " + sig["hold"] + "\n"
     msg += "⚡ Score: " + str(sig["score"]) + "/100 — " + sig["conf"]
     return msg
 
-def build_msg_OLD_UNUSED(sig):
-    is_sc = sig["type"] == "SCALP"
-    icon = "[SCALP]" if is_sc else "[SWING]"
-    pos = sig.get("position_size", 50)
-    pos_str = str(pos) + "% Position" if pos < 100 else "Full Position"
-
-    locked_str = ""
-    if sig.get("is_locked"):
-        locked_str = "[LOCKED] "
-
-    msg = icon + " " + locked_str + sig["type"] + " - " + sig["sym"] + "/USDT\n\n"
-    msg = msg + "Structure: " + sig["struct_label"] + "\n"
-    msg = msg + "Trend: " + sig["trend"] + " | Phase: " + sig["phase"] + "\n"
-    msg = msg + "Position: " + pos_str + "\n\n"
-    msg = msg + "Entry:  " + fp(sig["current"] * 0.99) + " - " + fp(sig["current"] * 1.01) + "\n"
-    msg = msg + "SL:     " + fp(sig["sl"]) + "\n"
-    msg = msg + "   (" + sig["sl_reason"] + ")\n\n"
-    msg = msg + "TP1:   " + fp(sig["tp1"]) + "\n"
-    msg = msg + "TP2:   " + fp(sig["tp2"]) + "\n"
-    msg = msg + "TP3:   " + fp(sig["tp3"]) + "\n"
-    msg = msg + "TP4:   " + fp(sig["tp4"]) + "\n\n"
-    msg = msg + "Hold: " + sig["hold"] + "\n"
-    msg = msg + "Score: " + str(sig["score"]) + "/100 - " + sig["conf"] + "\n"
-    msg = msg + "RSI: " + str(round(sig["rsi"])) + " | Stoch: " + str(round(sig["stoch"])) + "\n"
-    msg = msg + "Regime: " + sig["regime"] + "\n"
-    if sig.get("divergence"):
-        msg = msg + "Bullish Divergence detected\n"
-
-    if sig.get("alternate"):
-        msg = msg + "Alternate: " + sig["alternate"] + "\n"
-
-    return msg
+# Dead code removed
 
 def build_watch_msg(sym, sig_type, current, score, rsi, struct_label, reason, position_size=0, extra_info=None):
     icon = "[SCALP]" if sig_type == "SCALP" else "[SWING]"
@@ -2167,7 +2170,7 @@ def check_price_alerts():
         icon = "[SCALP]" if sig_type == "SCALP" else "[SWING]"
 
         try:
-            prices, _, _, _, _ = fetch_klines_full(sym, "1m", 2)
+            prices, _, _, _, _ = fetch_klines_full(sym, "15m", 2)
             if not prices:
                 continue
             current = prices[-1]
