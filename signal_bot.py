@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 
 # ═══════════════════════════════════════════════════════════════════
-# CONFIGURATION — Set via environment variables or edit below
+# CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 CHAT_ID        = os.getenv("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID_HERE")
@@ -65,26 +65,26 @@ def init_telegram():
     if TELEGRAM_TOKEN == "YOUR_BOT_TOKEN_HERE":
         print("WARNING: Using placeholder Telegram token. Set TELEGRAM_BOT_TOKEN env var.")
         return False
-    TG_BASE = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+    TG_BASE = "https://api.telegram.org/bot" + TELEGRAM_TOKEN
     return True
 
 def send_msg(msg):
     if not TG_BASE:
-        print(f"[NO TG] {msg[:80]}...")
+        print("[NO TG] " + msg[:80] + "...")
         return
     try:
-        requests.post(f"{TG_BASE}/sendMessage",
+        requests.post(TG_BASE + "/sendMessage",
             json={"chat_id":CHAT_ID,"text":msg,"parse_mode":"HTML","disable_web_page_preview":True},
             timeout=10)
     except Exception as e:
-        print(f"  TG error: {e}")
+        print("  TG error: " + str(e))
 
 # ═══════════════════════════════════════════════════════════════════
 # DATA FETCH
 # ═══════════════════════════════════════════════════════════════════
 def fetch_klines_full(sym, interval="1d", limit=365):
     try:
-        r = requests.get(f"{BN_BASE}/klines",
+        r = requests.get(BN_BASE + "/klines",
             params={"symbol":sym+"USDT","interval":interval,"limit":limit}, timeout=15)
         data = r.json()
         if not data or isinstance(data, dict):
@@ -99,7 +99,7 @@ def fetch_klines_full(sym, interval="1d", limit=365):
 
 def fetch_global_ath(sym):
     try:
-        r = requests.get(f"{BN_BASE}/klines",
+        r = requests.get(BN_BASE + "/klines",
             params={"symbol":sym+"USDT","interval":"1w","limit":200}, timeout=15)
         data = r.json()
         if not data or isinstance(data, dict):
@@ -155,10 +155,10 @@ def fetch_market_context():
         ctx["btc_dom_trend"] = get_trend("btc_dom")
         ctx["total_trend"] = get_trend("total")
         ctx["total3_trend"] = get_trend("total3")
-        print(f"  CTX: BTC.D={btc_dom:.1f}% FG={fg_now}({fg_zone}) TOTAL={ctx['total_trend']}")
+        print("  CTX: BTC.D=" + str(round(btc_dom,1)) + "% FG=" + str(fg_now) + "(" + fg_zone + ") TOTAL=" + ctx["total_trend"])
         return ctx
     except Exception as e:
-        print(f"  CTX failed: {e}")
+        print("  CTX failed: " + str(e))
         return None
 
 def context_adjustment(sym, ctx):
@@ -451,11 +451,11 @@ def htf_validation(sym):
         w_mom = (w_prices[-1] - w_prices[-4]) / w_prices[-4] * 100 if len(w_prices) >= 4 else 0
 
         if w_cur < w_ma20 and w_cur < w_ma50 * 0.95:
-            return False, f"HTF BLOCKED: Weekly bearish"
+            return False, "HTF BLOCKED: Weekly bearish"
         if w_mom < -20:
-            return False, f"HTF BLOCKED: Weekly momentum -20%"
+            return False, "HTF BLOCKED: Weekly momentum -20%"
         trend = "bull" if w_cur > w_ma20 else "neutral" if w_cur > w_ma50 else "bear"
-        return True, f"HTF OK: Weekly {trend}"
+        return True, "HTF OK: Weekly " + trend
     except:
         return True, "HTF: Error — passing"
 
@@ -492,8 +492,8 @@ def calc_c_equals_a(pivots, current):
         tr = ctt / at * 100 if at > 0 else 0; te = 80 <= tr <= 120
         if prox <= 5 and te: return True, cat, ratio, "C=A Price+Time"
         if prox <= 5: return True, cat, ratio, "C=A Price"
-        if 80 <= ratio <= 120: return True, cat, ratio, f"Near C=A ({ratio:.0f}%)"
-        return False, cat, ratio, f"C=A at {cat:.6f}"
+        if 80 <= ratio <= 120: return True, cat, ratio, "Near C=A (" + str(round(ratio)) + "%)"
+        return False, cat, ratio, "C=A at " + str(cat)
     return False, 0, 0, "No ABC found"
 
 # ═══════════════════════════════════════════════════════════════════
@@ -556,7 +556,7 @@ def detect_wxyxz(pivots, current):
         pr = x2p / x1p * 100; tr = x2t / x1t * 100 if x1t > 0 else 100
         if 85 <= pr <= 115 and 85 <= tr <= 115:
             z = p[5]["price"]; near = abs(current - z) / z * 100 <= 8
-            best = (True, z, pr, f"WXYXZ X1=X2 ({pr:.0f}%|{tr:.0f}%)")
+            best = (True, z, pr, "WXYXZ X1=X2 (" + str(round(pr)) + "%|" + str(round(tr)) + "%)")
             if near: break
     return best if best else (False, 0, 0, "")
 
@@ -600,29 +600,29 @@ def detect_trend_continuation(prices, highs, lows, pivots, current, trend, htf_p
             "type": "TREND_CONTINUATION",
             "sub_type": "IMPULSE_W3_LIKELY",
             "label": "Trend Continuation (W3/Parabolic)",
-            "score": 75,
+            "score": 70,
             "entry_wave": "W3 or Pullback",
             "entry_price": current,
             "htf_confirmed": htf_bullish,
-            "reason": f"HH+HL, ADX={adx['adx']:.0f}, momentum={momentum:.1f}%"
+            "reason": "HH+HL, ADX=" + str(round(adx["adx"])) + ", momentum=" + str(round(momentum, 1)) + "%"
         }
     else:
         return {
             "type": "TREND_CONTINUATION",
             "sub_type": "EARLY_TREND",
             "label": "Early Trend Continuation",
-            "score": 65,
+            "score": 60,
             "entry_wave": "Pullback to MA20",
             "entry_price": sum(prices[-20:]) / 20,
             "htf_confirmed": htf_bullish,
-            "reason": f"HH+HL forming, ADX={adx['adx']:.0f}, momentum={momentum:.1f}%"
+            "reason": "HH+HL forming, ADX=" + str(round(adx["adx"])) + ", momentum=" + str(round(momentum, 1)) + "%"
         }
 
 # ═══════════════════════════════════════════════════════════════════
 # STRUCTURE MEMORY — NEW
 # ═══════════════════════════════════════════════════════════════════
 def check_structure_memory(sym, sig_type, current, pivots):
-    key = f"{sym}_{sig_type}"
+    key = sym + "_" + sig_type
     mem = _structure_memory.get(key)
     if not mem: return None
 
@@ -645,11 +645,11 @@ def check_structure_memory(sym, sig_type, current, pivots):
         "entry_wave": mem["entry_wave"],
         "entry_price": mem["entry_price"],
         "locked": True,
-        "reason": f"Locked structure from {mem['date']}: {mem['label']}"
+        "reason": "Locked structure from " + mem["date"] + ": " + mem["label"]
     }
 
 def update_structure_memory(sym, sig_type, structure, pivots):
-    key = f"{sym}_{sig_type}"
+    key = sym + "_" + sig_type
     if structure["score"] >= 70 and structure["type"] in ("IMPULSE", "TREND_CONTINUATION"):
         mem = {
             "type": structure["type"],
@@ -673,7 +673,10 @@ def update_structure_memory(sym, sig_type, structure, pivots):
 
 
 # ═══════════════════════════════════════════════════════════════════
-# MAIN STRUCTURE RECOGNIZER — FIXED
+# MAIN STRUCTURE RECOGNIZER — REAL FIXES APPLIED
+# Fix 1: TREND_CONTINUATION capped at 70, EARLY_TREND at 55
+# Fix 2: Phase override REMOVED - don't replace real corrections with trend
+# Fix 3: Fallback REMOVED - return UNKNOWN if no structure found
 # ═══════════════════════════════════════════════════════════════════
 def recognize_chart_structure(prices, highs, lows, pivots, current, pct_ath,
                                  rsi_val, macd_bull, vol_dec, vol_exp, stoch,
@@ -692,9 +695,12 @@ def recognize_chart_structure(prices, highs, lows, pivots, current, pct_ath,
         s["confidence_score"] = score_structure_v6(s, rsi_val, macd_bull, vol_dec, vol_exp, stoch, trend)
         candidates.append(s)
 
-    # CANDIDATE 1: Trend Continuation
+    # CANDIDATE 1: Trend Continuation — capped at 70 max
     trend_cont = detect_trend_continuation(prices, highs, lows, pivots, current, trend, htf_prices)
     if trend_cont:
+        # Cap the score so it never outranks a confirmed ABC or WXYXZ
+        if trend_cont["score"] > 70:
+            trend_cont["score"] = 70
         add_candidate(trend_cont)
 
     # CANDIDATE 2: Classical Patterns
@@ -866,40 +872,26 @@ def recognize_chart_structure(prices, highs, lows, pivots, current, pct_ath,
 
         break
 
-    # PHASE OVERRIDE
-    if candidates:
-        candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
-        winner = candidates[0]
+    # NO PHASE OVERRIDE — Fix 2 applied
+    # Shallow pullbacks are corrections, not trend continuation
 
-        if phase in ("IMPULSING", "TRENDING_UP") and winner["type"] in ("ABC_ZIGZAG", "RUNNING_CORRECTION"):
-            total_decline = abs((pivots[0]["price"] - current) / pivots[0]["price"]) if pivots[0]["price"] > 0 else 0
-            if total_decline < 0.15:
-                trend_cont = detect_trend_continuation(prices, highs, lows, pivots, current, trend, htf_prices)
-                if trend_cont:
-                    trend_cont["confidence_score"] = score_structure_v6(trend_cont, rsi_val, macd_bull, vol_dec, vol_exp, stoch, trend)
-                    winner = trend_cont
-                    candidates.insert(0, winner)
-
-        if mem and mem["type"] in ("IMPULSE", "TREND_CONTINUATION"):
-            mem["confidence_score"] = score_structure_v6(mem, rsi_val, macd_bull, vol_dec, vol_exp, stoch, trend)
+    # Check memory
+    if mem and mem["type"] in ("IMPULSE", "TREND_CONTINUATION"):
+        mem["confidence_score"] = score_structure_v6(mem, rsi_val, macd_bull, vol_dec, vol_exp, stoch, trend)
+        if candidates:
+            winner = max(candidates, key=lambda x: x.get("confidence_score", 0))
             if mem["confidence_score"] >= winner.get("confidence_score", 0) * 0.85:
-                winner = mem
-                candidates.insert(0, winner)
+                candidates.insert(0, mem)
+        else:
+            candidates.append(mem)
 
+    # NO FALLBACK — Fix 3 applied
+    # If no structure found, return UNKNOWN (don't generate fake signals)
     if not candidates:
-        if trend["score"] >= 60 and phase in ("IMPULSING", "TRENDING_UP"):
-            fallback = {
-                "type": "TREND_CONTINUATION", "sub_type": "TREND_FALLBACK",
-                "label": "Trend Continuation (Fallback)",
-                "score": 55, "entry_wave": "Pullback", "entry_price": current,
-                "reason": "No EW structure, but strong trend detected"
-            }
-            fallback["confidence_score"] = score_structure_v6(fallback, rsi_val, macd_bull, vol_dec, vol_exp, stoch, trend)
-            return fallback
-
         return {"type": "UNKNOWN", "label": "No valid structure found", "confidence_score": 0,
                 "sit_applicable": [], "sit_na": [], "phase": phase}
 
+    # PICK WINNER
     candidates.sort(key=lambda x: x.get("confidence_score", 0), reverse=True)
     winner = candidates[0]
     runner = candidates[1] if len(candidates) > 1 else None
@@ -1029,7 +1021,7 @@ def calculate_adaptive_risk(struct_type, sub_type, pivots, current, regime, atr,
             tp2 = current + atr * atr_mult * 3.5
             tp3 = current + atr * atr_mult * 5.0
             tp4 = current + atr * atr_mult * 7.0
-            sl_reason = f"ATR-based trend SL ({atr_mult:.1f}x * 1.5)"
+            sl_reason = "ATR-based trend SL (" + str(round(atr_mult, 1)) + "x * 1.5)"
 
     elif struct_type == "EW_W4" and len(pivots) >= 5:
         w1h = pivots[1]["price"]; w3h = pivots[3]["price"]
@@ -1088,11 +1080,11 @@ def calculate_adaptive_risk(struct_type, sub_type, pivots, current, regime, atr,
         tp2 = current + atr * atr_mult * 2.5
         tp3 = current + atr * atr_mult * 4.0
         tp4 = current + atr * atr_mult * 6.0
-        sl_reason = f"ATR-based ({atr_mult:.1f}x)"
+        sl_reason = "ATR-based (" + str(round(atr_mult, 1)) + "x)"
 
     if sl > 0 and (current - sl) / current > max_sl:
         sl = current * (1 - max_sl)
-        sl_reason += f" (capped {max_sl * 100:.0f}%)"
+        sl_reason += " (capped " + str(round(max_sl * 100)) + "%)"
 
     if tp1 <= current: tp1 = current * (1 + tp1_pct)
     if tp2 <= tp1: tp2 = current * (1 + tp2_pct)
@@ -1126,7 +1118,6 @@ def calculate_position_size(score, regime, trend_label, is_mem_locked=False):
         base = int(base * 1.1)
 
     return min(base, 100)
-
 
 # ═══════════════════════════════════════════════════════════════════
 # MAIN ANALYSIS
@@ -1211,7 +1202,7 @@ def analyze(coin, signal_type="swing"):
 
     htf_ok, htf_note = htf_validation(sym)
     if not htf_ok:
-        print(f"    {htf_note}")
+        print("    " + htf_note)
         return None
 
     if rsi_val > 75:
@@ -1240,7 +1231,7 @@ def analyze(coin, signal_type="swing"):
             "current": current, "score": final_score, "rsi": rsi_val, "stoch": stoch,
             "struct_label": struct_label, "struct_type": struct_type,
             "position_size": position_size,
-            "reason": f"Developing — {struct_label} (score {final_score}/100)"
+            "reason": "Developing — " + struct_label + " (score " + str(final_score) + "/100)"
         }
 
     return {
@@ -1258,18 +1249,18 @@ def analyze(coin, signal_type="swing"):
     }
 
 # ═══════════════════════════════════════════════════════════════════
-# FORMATTING — FIXED: no f-string with curly braces inside
+# FORMATTING — NO F-STRINGS, ALL CONCATENATION
 # ═══════════════════════════════════════════════════════════════════
 def fp(p):
     if not p and p != 0:
         return "N/A"
     if p >= 1000:
-        return "$" + f"{round(p):,}"
+        return "$" + "{:,}".format(round(p))
     if p >= 1:
-        return "$" + f"{p:.4f}"
+        return "$" + "{:.4f}".format(p)
     if p >= 0.01:
-        return "$" + f"{p:.5f}"
-    return "$" + f"{p:.7f}"
+        return "$" + "{:.5f}".format(p)
+    return "$" + "{:.7f}".format(p)
 
 def build_msg(sig):
     is_sc = sig["type"] == "SCALP"
@@ -1423,7 +1414,7 @@ def monitor_watch_coins():
             if time.time() - sent_signals.get(signal_key, 0) < cooldown:
                 continue
 
-            print(f"  WATCH→SIGNAL: {sym} {sig_type.upper()} {result['score']}/100")
+            print("  WATCH→SIGNAL: " + sym + " " + sig_type.upper() + " " + str(result["score"]) + "/100")
             send_msg(build_msg(result))
             sent_signals[signal_key] = now
             active_trades[signal_key] = {
@@ -1434,10 +1425,9 @@ def monitor_watch_coins():
                 "closed": False, "time": now
             }
         except Exception as e:
-            print(f"  Watch error {sym}: {e}")
+            print("  Watch error " + sym + ": " + str(e))
 
         time.sleep(1)
-
 
 # ═══════════════════════════════════════════════════════════════════
 # MAIN LOOP
@@ -1454,7 +1444,7 @@ def main():
 
     print("=" * 60)
     print("EW STRATEGY V6 — ADAPTIVE STRUCTURE-AWARE BOT")
-    print(f"{total} coins | Trend continuation | Memory locks")
+    print(str(total) + " coins | Trend continuation | Memory locks")
     print("=" * 60)
 
     if tg_ok:
@@ -1477,7 +1467,7 @@ def main():
     while True:
         scan_count += 1
         now = datetime.now().strftime("%H:%M:%S")
-        print(f"\n[{now}] Scan #{scan_count}")
+        print("\n[" + now + "] Scan #" + str(scan_count))
 
         market_ctx = fetch_market_context()
         signals = 0
@@ -1485,7 +1475,7 @@ def main():
 
         for coin in HALAL_WATCHLIST:
             sym = coin["sym"]
-            print(f"  {sym}...", end=" ", flush=True)
+            print("  " + sym + "...", end=" ", flush=True)
 
             try:
                 # SWING analysis
@@ -1498,7 +1488,7 @@ def main():
                         if time.time() - sent_watches.get(wk, 0) < 7200:
                             print("W(cd)", end=" ")
                         else:
-                            print(f"W{sw['score']}", end=" ")
+                            print("W" + str(sw["score"]), end=" ")
                             pos = sw.get("position_size", 0)
                             send_msg(build_watch_msg(sym, "SWING", sw["current"], sw["score"], sw["rsi"], sw["struct_label"], sw["reason"], pos))
                             sent_watches[wk] = time.time()
@@ -1507,7 +1497,7 @@ def main():
                         if time.time() - sent_signals.get(swing_key, 0) < 14400:
                             print("S(cd)", end=" ")
                         else:
-                            print(f"{sw['score']}/100[{sw.get('struct_type', '')}]", end=" ")
+                            print(str(sw["score"]) + "/100[" + sw.get("struct_type", "") + "]", end=" ")
                             send_msg(build_msg(sw))
                             sent_signals[swing_key] = time.time()
                             signals += 1
@@ -1532,7 +1522,7 @@ def main():
                         if time.time() - sent_watches.get(wk, 0) < 3600:
                             print("WS(cd)")
                         else:
-                            print(f"WS{sc['score']}")
+                            print("WS" + str(sc["score"]))
                             pos = sc.get("position_size", 0)
                             send_msg(build_watch_msg(sym, "SCALP", sc["current"], sc["score"], sc["rsi"], sc["struct_label"], sc["reason"], pos))
                             sent_watches[wk] = time.time()
@@ -1541,7 +1531,7 @@ def main():
                         if time.time() - sent_signals.get(scalp_key, 0) < 7200:
                             print("SC(cd)")
                         else:
-                            print(f"{sc['score']}/100[{sc.get('struct_type', '')}]")
+                            print(str(sc["score"]) + "/100[" + sc.get("struct_type", "") + "]")
                             send_msg(build_msg(sc))
                             sent_signals[scalp_key] = time.time()
                             signals += 1
@@ -1559,12 +1549,12 @@ def main():
                 time.sleep(1)
 
             except Exception as e:
-                print(f"err:{e}")
+                print("err:" + str(e))
                 time.sleep(5)
 
-        print(f"\nScan #{scan_count} — {signals} signal(s), {watches} watch(es) — next in 15min")
+        print("\nScan #" + str(scan_count) + " — " + str(signals) + " signal(s), " + str(watches) + " watch(es) — next in 15min")
         active_count = len([t for t in active_trades.values() if not t.get("closed")])
-        print(f"  Active trades: {active_count} | Watch list: {len(sent_watches)}")
+        print("  Active trades: " + str(active_count) + " | Watch list: " + str(len(sent_watches)))
 
         for _ in range(3):
             time.sleep(300)
@@ -1585,6 +1575,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n\nBot stopped by user.")
     except Exception as e:
-        print(f"\n\nFatal error: {e}")
+        print("\n\nFatal error: " + str(e))
         import traceback
         traceback.print_exc()
