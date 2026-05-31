@@ -7,19 +7,14 @@ from datetime import datetime
 # ═══════════════════════════════════════════════════════════════════
 # CONFIGURATION — Set via environment variables or edit below
 # ═══════════════════════════════════════════════════════════════════
-# Option 1: Environment variables (recommended for GitHub/replit)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 CHAT_ID        = os.getenv("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID_HERE")
 
-# Option 2: Hardcode here (not recommended for public repos)
-# TELEGRAM_TOKEN = "7975488031:AAH...your_token"
-# CHAT_ID        = "8422276082"
-
 BN_BASE        = "https://api.binance.com/api/v3"
-TG_BASE        = None  # Set after token validation
+TG_BASE        = None
 
 # ═══════════════════════════════════════════════════════════════════
-# HALAL WATCHLIST — Tier-based priority
+# HALAL WATCHLIST
 # ═══════════════════════════════════════════════════════════════════
 HALAL_WATCHLIST = [
     {"sym":"BTC","tier":1},{"sym":"ETH","tier":1},{"sym":"XRP","tier":1},
@@ -60,8 +55,7 @@ scan_count     = 0
 active_trades  = {}
 market_ctx     = None
 _ctx_history   = []
-# Structure memory: remembers last structure per symbol to prevent flip-flopping
-_structure_memory = {}  # key: "BTC_swing" → {"type":"IMPULSE","w2_low":95000,"since":timestamp}
+_structure_memory = {}
 
 # ═══════════════════════════════════════════════════════════════════
 # TELEGRAM
@@ -69,7 +63,7 @@ _structure_memory = {}  # key: "BTC_swing" → {"type":"IMPULSE","w2_low":95000,
 def init_telegram():
     global TG_BASE
     if TELEGRAM_TOKEN == "YOUR_BOT_TOKEN_HERE":
-        print("WARNING: Using placeholder Telegram token. Set your real token.")
+        print("WARNING: Using placeholder Telegram token. Set TELEGRAM_BOT_TOKEN env var.")
         return False
     TG_BASE = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
     return True
@@ -99,7 +93,7 @@ def fetch_klines_full(sym, interval="1d", limit=365):
         highs=[float(k[2]) for k in data]
         lows=[float(k[3]) for k in data]
         vols=[float(k[5]) for k in data]
-        return prices, highs, lows, vols
+        return prices,highs,lows,vols
     except:
         return [],[],[],[]
 
@@ -115,7 +109,7 @@ def fetch_global_ath(sym):
         return 0
 
 # ═══════════════════════════════════════════════════════════════════
-# MARKET CONTEXT (Alternative.me)
+# MARKET CONTEXT
 # ═══════════════════════════════════════════════════════════════════
 def fetch_market_context():
     global _ctx_history
@@ -142,8 +136,7 @@ def fetch_market_context():
         elif fg_now <= 80: fg_zone = "GREED"
         else: fg_zone = "EXTREME_GREED"
 
-        fg_trend = ("RISING" if fg_now > fg_7d + 3 else
-                    "FALLING" if fg_now < fg_7d - 3 else "NEUTRAL")
+        fg_trend = "RISING" if fg_now > fg_7d + 3 else "FALLING" if fg_now < fg_7d - 3 else "NEUTRAL"
 
         ctx = {
             "btc_dom": round(btc_dom, 2), "total": total, "total3": total3,
@@ -169,11 +162,9 @@ def fetch_market_context():
         return None
 
 def context_adjustment(sym, ctx):
-    """Reduced penalties — max -20 instead of -40. Context is a filter, not a veto."""
     if not ctx: return 0
     adj = 0
     fg = ctx.get("fg_now", 50)
-    # Fear/Greed: mild adjustment
     if fg <= 20: adj -= 15
     elif fg <= 35: adj -= 8
     elif fg >= 80: adj -= 3
@@ -183,7 +174,6 @@ def context_adjustment(sym, ctx):
     if total_trend == "FALLING": adj -= 10
     elif total_trend == "RISING": adj += 5
 
-    # Altcoin-specific adjustments
     if sym not in ("BTC", "ETH"):
         btc_dom = ctx.get("btc_dom", 50)
         btc_dom_trend = ctx.get("btc_dom_trend", "NEUTRAL")
@@ -194,7 +184,6 @@ def context_adjustment(sym, ctx):
         elif total3_trend == "RISING": adj += 5
 
     return max(-20, min(+15, adj))
-
 
 # ═══════════════════════════════════════════════════════════════════
 # INDICATORS
@@ -299,7 +288,7 @@ def calc_divergence(prices, period=30):
     return {"bullish": bullish, "bearish": bearish}
 
 # ═══════════════════════════════════════════════════════════════════
-# VOLATILITY REGIME (V5)
+# VOLATILITY REGIME
 # ═══════════════════════════════════════════════════════════════════
 def detect_volatility_regime(prices, highs, lows):
     if len(prices) < 50:
@@ -318,15 +307,13 @@ def detect_volatility_regime(prices, highs, lows):
     return {"type": "normal", "label": "Normal Volatility", "multiplier": 1.0, "atr": atr, "atr_pct": atr_pct}
 
 # ═══════════════════════════════════════════════════════════════════
-# ADAPTIVE PIVOTS (V5) — IMPROVED: better consolidation
+# ADAPTIVE PIVOTS
 # ═══════════════════════════════════════════════════════════════════
 def detect_pivots_adaptive(prices, highs, lows, regime, mode="swing"):
     n = len(prices)
     atr_pct = regime.get("atr_pct", 0.04)
-    # Tighter base window for cleaner pivots
     base_win = 5 if mode == "scalp" else max(3, min(15, int(n / (30 + atr_pct * 100))))
     win = max(3, round(base_win * regime["multiplier"]))
-    # Higher min_move to filter noise in bull trends
     base_min = 0.05 if mode == "scalp" else 0.10
     min_move = base_min * regime["multiplier"]
 
@@ -345,7 +332,6 @@ def detect_pivots_adaptive(prices, highs, lows, regime, mode="swing"):
     pivots.insert(0, {"idx": 0, "price": prices[0], "type": st, "strength": 0})
     pivots.append({"idx": n - 1, "price": prices[-1], "type": "current", "strength": 0})
 
-    # Consolidate same-type pivots, keeping the most extreme
     sig = [pivots[0]]
     for p in pivots[1:]:
         prev = sig[-1]
@@ -359,7 +345,6 @@ def detect_pivots_adaptive(prices, highs, lows, regime, mode="swing"):
         if move >= min_move:
             sig.append(p)
 
-    # Filter tiny first waves (noise)
     if len(sig) >= 2:
         w1_size = abs(sig[1]["price"] - sig[0]["price"])
         if w1_size / prices[-1] * 100 < 6.0:
@@ -367,9 +352,8 @@ def detect_pivots_adaptive(prices, highs, lows, regime, mode="swing"):
 
     return sig, win, min_move
 
-
 # ═══════════════════════════════════════════════════════════════════
-# TREND ANALYSIS (V5 enhanced)
+# TREND ANALYSIS
 # ═══════════════════════════════════════════════════════════════════
 def analyze_trend(prices, weekly_prices, current):
     ma20 = sum(prices[-20:]) / 20 if len(prices) >= 20 else current
@@ -406,12 +390,11 @@ def analyze_trend(prices, weekly_prices, current):
 
     return {
         "score": score, "label": label, "ma20": ma20, "ma50": ma50, "ma200": ma200,
-        "momentum": momentum, "bullish": score >= 60, "bearish": score <= 40,
-        "ema12": ema12, "ema26": ema26
+        "momentum": momentum, "bullish": score >= 60, "bearish": score <= 40
     }
 
 # ═══════════════════════════════════════════════════════════════════
-# MARKET PHASE — IMPROVED: clearer definitions
+# MARKET PHASE
 # ═══════════════════════════════════════════════════════════════════
 def read_market_phase(prices, highs, lows, pivots, current, pct_ath):
     if len(prices) < 50: return "UNKNOWN"
@@ -431,22 +414,20 @@ def read_market_phase(prices, highs, lows, pivots, current, pct_ath):
     in_correction = pct_ath < -20
     momentum = (prices[-1] - prices[-10]) / prices[-10] * 100 if len(prices) >= 10 else 0
 
-    # Range detection
     if len(prices) >= 20:
         rh = max(prices[-20:]); rl = min(prices[-20:])
         in_range = (rh - rl) / rl * 100 < 12 if rl > 0 else False
     else:
         in_range = False
 
-    # Priority order matters
     if lh and ll and current < ma50:
         return "DOWNTREND"
     if hh and hl and current > ma50 and current > ma200 and momentum > 5:
-        return "IMPULSING"  # Strong uptrend with momentum
+        return "IMPULSING"
     if hh and hl and current > ma50:
-        return "TRENDING_UP"  # Uptrend but not explosive
+        return "TRENDING_UP"
     if in_correction and (hh or hl):
-        return "CORRECTING_WITHIN_UPTREND"  # Correction in larger uptrend
+        return "CORRECTING_WITHIN_UPTREND"
     if in_correction:
         return "CORRECTING"
     if in_range and not in_correction:
@@ -458,21 +439,19 @@ def read_market_phase(prices, highs, lows, pivots, current, pct_ath):
     return "NEUTRAL"
 
 # ═══════════════════════════════════════════════════════════════════
-# HTF VALIDATION — IMPROVED: stricter
+# HTF VALIDATION
 # ═══════════════════════════════════════════════════════════════════
 def htf_validation(sym):
     try:
         w_prices, _, _, _ = fetch_klines_full(sym, "1w", 52)
-        if len(w_prices) < 20:
-            return True, "HTF: No weekly data"
+        if len(w_prices) < 20: return True, "HTF: No weekly data"
         w_ma20 = sum(w_prices[-20:]) / 20
         w_ma50 = sum(w_prices[-50:]) / 50 if len(w_prices) >= 50 else w_ma20
         w_cur = w_prices[-1]
         w_mom = (w_prices[-1] - w_prices[-4]) / w_prices[-4] * 100 if len(w_prices) >= 4 else 0
 
-        # Stricter: must be above weekly MA20 AND not deeply below MA50
         if w_cur < w_ma20 and w_cur < w_ma50 * 0.95:
-            return False, f"HTF BLOCKED: Weekly bearish (price < MA20 & < MA50)"
+            return False, f"HTF BLOCKED: Weekly bearish"
         if w_mom < -20:
             return False, f"HTF BLOCKED: Weekly momentum -20%"
         trend = "bull" if w_cur > w_ma20 else "neutral" if w_cur > w_ma50 else "bear"
@@ -517,16 +496,14 @@ def calc_c_equals_a(pivots, current):
         return False, cat, ratio, f"C=A at {cat:.6f}"
     return False, 0, 0, "No ABC found"
 
-
 # ═══════════════════════════════════════════════════════════════════
-# CLASSICAL PATTERNS (Rule 17) — IMPROVED
+# CLASSICAL PATTERNS
 # ═══════════════════════════════════════════════════════════════════
 def detect_classical_patterns(prices, pivots, current):
     if len(prices) < 30 or len(pivots) < 4: return None
     peaks = [p for p in pivots if p["type"] == "peak"]
     troughs = [p for p in pivots if p["type"] == "trough"]
 
-    # Double Bottom — must be recent
     if len(troughs) >= 2:
         t1 = troughs[-2]; t2 = troughs[-1]
         if abs(t1["price"] - t2["price"]) / t1["price"] < 0.03:
@@ -536,16 +513,14 @@ def detect_classical_patterns(prices, pivots, current):
                 return {
                     "type": "DOUBLE_BOTTOM", "label": "Double Bottom",
                     "entry_price": t2["price"], "target": nk + (nk - t2["price"]),
-                    "score": 70, "recency_days": (len(prices) - t2["idx"]) / len(prices) * 365
+                    "score": 70
                 }
 
-    # Double Top
     if len(peaks) >= 2:
         p1 = peaks[-2]; p2 = peaks[-1]
         if abs(p1["price"] - p2["price"]) / p1["price"] < 0.03:
             return {"type": "DOUBLE_TOP", "label": "Double Top", "score": 0}
 
-    # Falling Wedge (bullish)
     if len(peaks) >= 3 and len(troughs) >= 3:
         ph = [peaks[-3]["price"], peaks[-2]["price"], peaks[-1]["price"]]
         tl = [troughs[-3]["price"], troughs[-2]["price"], troughs[-1]["price"]]
@@ -586,22 +561,16 @@ def detect_wxyxz(pivots, current):
     return best if best else (False, 0, 0, "")
 
 # ═══════════════════════════════════════════════════════════════════
-# TREND CONTINUATION DETECTION — NEW: catches bull trends without 5 pivots
+# TREND CONTINUATION — NEW
 # ═══════════════════════════════════════════════════════════════════
 def detect_trend_continuation(prices, highs, lows, pivots, current, trend, htf_prices):
-    """
-    Detects when price is in a strong trend continuation (Wave 3, parabolic, etc.)
-    even when classic 5-wave impulse structure isn't visible.
-    """
     if len(prices) < 30: return None
 
-    # Check higher timeframe
     htf_bullish = False
     if len(htf_prices) >= 20:
         htf_ma20 = sum(htf_prices[-20:]) / 20
         htf_bullish = htf_prices[-1] > htf_ma20
 
-    # Recent higher highs and higher lows
     recent_peaks = [p for p in pivots if p["type"] == "peak" and p["idx"] > len(prices) * 0.3]
     recent_troughs = [p for p in pivots if p["type"] == "trough" and p["idx"] > len(prices) * 0.3]
 
@@ -614,24 +583,19 @@ def detect_trend_continuation(prices, highs, lows, pivots, current, trend, htf_p
     if not (hh and hl):
         return None
 
-    # ADX confirmation
     adx = calc_adx(highs, lows, prices, 14)
     if adx["adx"] < 20:
         return None
 
-    # Momentum confirmation
     momentum = (prices[-1] - prices[-20]) / prices[-20] * 100 if len(prices) >= 20 else 0
     if momentum < 5:
         return None
 
-    # Price above key MAs
     ma50 = sum(prices[-50:]) / 50 if len(prices) >= 50 else current
     if current < ma50 * 0.98:
         return None
 
-    # Determine sub-type based on structure
     if len(pivots) >= 5:
-        # Could be W3 of impulse
         return {
             "type": "TREND_CONTINUATION",
             "sub_type": "IMPULSE_W3_LIKELY",
@@ -643,7 +607,6 @@ def detect_trend_continuation(prices, highs, lows, pivots, current, trend, htf_p
             "reason": f"HH+HL, ADX={adx['adx']:.0f}, momentum={momentum:.1f}%"
         }
     else:
-        # Early trend, fewer pivots
         return {
             "type": "TREND_CONTINUATION",
             "sub_type": "EARLY_TREND",
@@ -656,39 +619,29 @@ def detect_trend_continuation(prices, highs, lows, pivots, current, trend, htf_p
         }
 
 # ═══════════════════════════════════════════════════════════════════
-# STRUCTURE MEMORY — NEW: prevents flip-flopping
+# STRUCTURE MEMORY — NEW
 # ═══════════════════════════════════════════════════════════════════
 def check_structure_memory(sym, sig_type, current, pivots):
-    """
-    Checks if we previously identified an impulse and price hasn't invalidated it.
-    Returns the locked structure if still valid, None otherwise.
-    """
     key = f"{sym}_{sig_type}"
     mem = _structure_memory.get(key)
     if not mem: return None
 
-    # Memory expires after 30 days
     if time.time() - mem["since"] > 30 * 86400:
         return None
 
-    # Check invalidation
     if mem["type"] == "IMPULSE":
-        # W2 entry: invalidated if price breaks below W0 origin
         if mem.get("w0_origin") and current < mem["w0_origin"] * 0.99:
-            return None  # Invalidated
-        # W4 entry: invalidated if price breaks below W1 top
+            return None
         if mem.get("w1_top") and current < mem["w1_top"] * 0.99:
-            return None  # Invalidated
-        # W3 in progress: invalidated if price breaks below last trough
+            return None
         if mem.get("last_trough") and current < mem["last_trough"] * 0.97:
-            return None  # Invalidated
+            return None
 
-    # Still valid — return locked structure
     return {
         "type": mem["type"],
         "sub_type": mem["sub_type"],
         "label": mem["label"],
-        "score": min(mem["score"] + 5, 85),  # Confidence grows with time
+        "score": min(mem["score"] + 5, 85),
         "entry_wave": mem["entry_wave"],
         "entry_price": mem["entry_price"],
         "locked": True,
@@ -696,7 +649,6 @@ def check_structure_memory(sym, sig_type, current, pivots):
     }
 
 def update_structure_memory(sym, sig_type, structure, pivots):
-    """Updates memory when a strong structure is detected."""
     key = f"{sym}_{sig_type}"
     if structure["score"] >= 70 and structure["type"] in ("IMPULSE", "TREND_CONTINUATION"):
         mem = {
@@ -709,7 +661,6 @@ def update_structure_memory(sym, sig_type, structure, pivots):
             "since": time.time(),
             "date": datetime.now().strftime("%Y-%m-%d")
         }
-        # Store invalidation levels
         if len(pivots) >= 3:
             mem["w0_origin"] = pivots[0]["price"]
         if len(pivots) >= 2:
@@ -723,12 +674,6 @@ def update_structure_memory(sym, sig_type, structure, pivots):
 
 # ═══════════════════════════════════════════════════════════════════
 # MAIN STRUCTURE RECOGNIZER — FIXED
-# Key changes:
-# 1. Scans ALL history, finds MOST RECENT valid pattern (not oldest)
-# 2. Phase can OVERRIDE structure type
-# 3. Trend continuation is a PRIMARY candidate, not fallback
-# 4. Structure memory prevents flip-flopping
-# 5. All candidates scored, best wins
 # ═══════════════════════════════════════════════════════════════════
 def recognize_chart_structure(prices, highs, lows, pivots, current, pct_ath,
                                  rsi_val, macd_bull, vol_dec, vol_exp, stoch,
@@ -738,24 +683,21 @@ def recognize_chart_structure(prices, highs, lows, pivots, current, pct_ath,
         return {"type": "UNKNOWN", "label": "Insufficient data", "confidence_score": 0,
                 "sit_applicable": [], "sit_na": [], "phase": phase}
 
-    # Check structure memory first
     mem = check_structure_memory(sym, sig_type, current, pivots)
-
     candidates = []
 
     def add_candidate(s):
         if not s or s.get("type") == "UNKNOWN":
             return
-        # Score the candidate
         s["confidence_score"] = score_structure_v6(s, rsi_val, macd_bull, vol_dec, vol_exp, stoch, trend)
         candidates.append(s)
 
-    # === CANDIDATE 1: Trend Continuation (NEW — primary, not fallback) ===
+    # CANDIDATE 1: Trend Continuation
     trend_cont = detect_trend_continuation(prices, highs, lows, pivots, current, trend, htf_prices)
     if trend_cont:
         add_candidate(trend_cont)
 
-    # === CANDIDATE 2: Classical Patterns ===
+    # CANDIDATE 2: Classical Patterns
     classical = detect_classical_patterns(prices, pivots, current)
     if classical:
         if classical.get("type") == "DOUBLE_TOP":
@@ -769,7 +711,7 @@ def recognize_chart_structure(prices, highs, lows, pivots, current, pct_ath,
             "sit_na": ["fib_golden", "alternation", "wave_symmetry", "blue_box", "abc_struct"]
         })
 
-    # === CANDIDATE 3: WXYXZ ===
+    # CANDIDATE 3: WXYXZ
     wx_ok, wx_price, wx_ratio, wx_label = detect_wxyxz(pivots, current)
     if wx_ok:
         add_candidate({
@@ -779,19 +721,16 @@ def recognize_chart_structure(prices, highs, lows, pivots, current, pct_ath,
             "sit_na": ["fib_golden", "alternation", "wave_symmetry", "blue_box", "abc_struct", "ca_zone"]
         })
 
-    # === CANDIDATE 4-6: EW Structures (scan ALL history, pick MOST RECENT) ===
+    # CANDIDATE 4-6: EW Structures (scan ALL, pick most recent)
     n = len(pivots)
-
-    # Find most recent valid patterns
     best_w2 = None; best_w4 = None
-    best_abc = None; best_flat = None; best_running = None
 
     for i in range(n - 6, -1, -1):
         if i + 5 >= n: continue
         p = pivots[i:i + 6]
         types = [x["type"] for x in p]
 
-        # IMPULSE W2 (needs 6 pivots: trough,peak,trough,peak,trough,peak)
+        # IMPULSE W2
         if types == ["trough", "peak", "trough", "peak", "trough", "peak"]:
             w0 = p[0]["price"]; w1h = p[1]["price"]; w2l = p[2]["price"]
             w3h = p[3]["price"]; w4l = p[4]["price"]; w5h = p[5]["price"]
@@ -809,12 +748,12 @@ def recognize_chart_structure(prices, highs, lows, pivots, current, pct_ath,
                 "score": score,
                 "sit_applicable": ["fib_golden", "wave_symmetry", "rsi_ok", "macd_ok", "vol_dec", "vol_exp", "candlestick"],
                 "sit_na": ["blue_box", "alternation", "wave_c_bottom", "ca_zone", "abc_struct", "wxyxz"],
-                "recency": (n - p[2]["idx"]) / n  # How recent is the W2?
+                "recency": (n - p[2]["idx"]) / n
             }
             if not best_w2 or cand["recency"] < best_w2["recency"]:
                 best_w2 = cand
 
-        # IMPULSE W4 (needs 5 pivots: trough,peak,trough,peak,trough)
+        # IMPULSE W4
         if i + 4 < n and types[:5] == ["trough", "peak", "trough", "peak", "trough"]:
             p5 = pivots[i:i + 5]
             w0 = p5[0]["price"]; w1h = p5[1]["price"]; w2l = p5[2]["price"]
@@ -841,12 +780,10 @@ def recognize_chart_structure(prices, highs, lows, pivots, current, pct_ath,
             if not best_w4 or cand["recency"] < best_w4["recency"]:
                 best_w4 = cand
 
-    # Add best EW patterns (most recent, not oldest)
     if best_w2: add_candidate(best_w2)
     if best_w4: add_candidate(best_w4)
 
-    # === CANDIDATE 7-9: Correction patterns (scan ALL, pick most recent) ===
-    # These require a completed 5-wave impulse BEFORE the correction
+    # CANDIDATE 7-9: Correction patterns
     for i in range(n - 6, -1, -1):
         if i + 5 >= n: continue
         p = pivots[i:i + 6]
@@ -927,36 +864,29 @@ def recognize_chart_structure(prices, highs, lows, pivots, current, pct_ath,
                 "sit_na": ["fib_golden", "blue_box", "alternation", "wave_symmetry", "wxyxz"]
             })
 
-        break  # Only process the most recent 5-wave + correction sequence
+        break
 
-    # === PHASE OVERRIDE ===
-    # If phase says IMPULSING or TRENDING_UP but best candidate is a correction,
-    # check if it's really a correction or just a pullback
+    # PHASE OVERRIDE
     if candidates:
         candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
         winner = candidates[0]
 
-        # Override: if we're in a strong uptrend and the "correction" is shallow
         if phase in ("IMPULSING", "TRENDING_UP") and winner["type"] in ("ABC_ZIGZAG", "RUNNING_CORRECTION"):
             total_decline = abs((pivots[0]["price"] - current) / pivots[0]["price"]) if pivots[0]["price"] > 0 else 0
-            if total_decline < 0.15:  # Less than 15% from start = not a real correction
-                # Replace with trend continuation
+            if total_decline < 0.15:
                 trend_cont = detect_trend_continuation(prices, highs, lows, pivots, current, trend, htf_prices)
                 if trend_cont:
                     trend_cont["confidence_score"] = score_structure_v6(trend_cont, rsi_val, macd_bull, vol_dec, vol_exp, stoch, trend)
                     winner = trend_cont
                     candidates.insert(0, winner)
 
-        # Override: if memory says we were in impulse and price hasn't broken invalidation
         if mem and mem["type"] in ("IMPULSE", "TREND_CONTINUATION"):
             mem["confidence_score"] = score_structure_v6(mem, rsi_val, macd_bull, vol_dec, vol_exp, stoch, trend)
             if mem["confidence_score"] >= winner.get("confidence_score", 0) * 0.85:
                 winner = mem
                 candidates.insert(0, winner)
 
-    # === NO CANDIDATES ===
     if not candidates:
-        # Last resort: if trend is strong, return TREND_CONTINUATION
         if trend["score"] >= 60 and phase in ("IMPULSING", "TRENDING_UP"):
             fallback = {
                 "type": "TREND_CONTINUATION", "sub_type": "TREND_FALLBACK",
@@ -970,12 +900,10 @@ def recognize_chart_structure(prices, highs, lows, pivots, current, pct_ath,
         return {"type": "UNKNOWN", "label": "No valid structure found", "confidence_score": 0,
                 "sit_applicable": [], "sit_na": [], "phase": phase}
 
-    # === PICK WINNER ===
     candidates.sort(key=lambda x: x.get("confidence_score", 0), reverse=True)
     winner = candidates[0]
     runner = candidates[1] if len(candidates) > 1 else None
 
-    # Ambiguity check
     if runner:
         gap = winner.get("confidence_score", 0) - runner.get("confidence_score", 0)
         if gap < 8:
@@ -989,7 +917,6 @@ def recognize_chart_structure(prices, highs, lows, pivots, current, pct_ath,
     winner["phase"] = phase
     winner["all_candidates"] = [(c.get("type", ""), c.get("confidence_score", 0)) for c in candidates]
 
-    # Update memory if strong impulse/trend detected
     if winner["type"] in ("IMPULSE", "TREND_CONTINUATION") and winner.get("score", 0) >= 65:
         update_structure_memory(sym, sig_type, winner, pivots)
 
@@ -997,7 +924,7 @@ def recognize_chart_structure(prices, highs, lows, pivots, current, pct_ath,
 
 
 # ═══════════════════════════════════════════════════════════════════
-# SCORING ENGINE V6 — IMPROVED: trend continuation gets proper scoring
+# SCORING ENGINE V6
 # ═══════════════════════════════════════════════════════════════════
 def score_structure_v6(struct, rsi_val, macd_bull, vol_dec, vol_exp, stoch, trend):
     if not struct or struct.get("type") == "UNKNOWN":
@@ -1006,10 +933,9 @@ def score_structure_v6(struct, rsi_val, macd_bull, vol_dec, vol_exp, stoch, tren
     t = struct.get("type", "UNKNOWN")
     score = 0
 
-    # Base score by structure type
     sq = 0
     if t == "TREND_CONTINUATION":
-        sq += 20  # High base for trend continuation
+        sq += 20
         if struct.get("sub_type") == "IMPULSE_W3_LIKELY": sq += 8
         elif struct.get("sub_type") == "EARLY_TREND": sq += 5
     elif t == "WXYXZ": sq += 18
@@ -1017,37 +943,34 @@ def score_structure_v6(struct, rsi_val, macd_bull, vol_dec, vol_exp, stoch, tren
     elif t in ("ABC_ZIGZAG", "EW_W4", "EW_W2"): sq += 10
     elif t in ("DOUBLE_BOTTOM", "FALLING_WEDGE"): sq += 8
 
-    # Structure-specific bonuses
     if t == "ABC_ZIGZAG":
         cp = struct.get("c_progress", 0)
         sq += 10 if cp >= 90 else 6 if cp >= 70 else 3 if cp >= 50 else 0
     elif t == "EW_W4":
         w4r = struct.get("w4_ret", 0)
-        sq += 10 if 0.23 <= w4r <= 0.38 else 6 if w4r <= 0.50 else 2
+        sq += 10 if 0.23 <= w4r <= 0.382 else 6 if w4r <= 0.50 else 2
     elif t == "EW_W2":
         w2r = struct.get("w2_ret", 0)
         sq += 10 if 0.50 <= w2r <= 0.786 else 6 if w2r >= 0.382 else 2
     elif t == "TREND_CONTINUATION":
         if struct.get("htf_confirmed"): sq += 10
-        sq += 8  # Trend continuation bonus
+        sq += 8
     else:
         sq += 8
 
     score += min(sq, 40)
 
-    # EW rules validation bonus
     ew = 0
     if t in ("EW_W4", "EW_W2"):
         if struct.get("w2_ret", 0) <= 1.0: ew += 8
         if struct.get("w3", 1) >= struct.get("w1", 1): ew += 8
         ew += 9
     elif t == "TREND_CONTINUATION":
-        ew += 25  # Trend continuation gets full EW bonus
+        ew += 25
     else:
         ew += 25
     score += min(ew, 25)
 
-    # Fibonacci bonus
     fib = 0
     if t == "EW_W2":
         r = struct.get("w2_ret", 0)
@@ -1058,18 +981,16 @@ def score_structure_v6(struct, rsi_val, macd_bull, vol_dec, vol_exp, stoch, tren
     elif t == "ABC_ZIGZAG":
         fib = 15 if struct.get("c_confirmed") else 8
     elif t == "TREND_CONTINUATION":
-        fib = 12  # Trend continuation gets fib bonus for momentum
+        fib = 12
     else:
         fib = 10
     score += min(fib, 15)
 
-    # Volume
     vol = 0
     if vol_dec: vol += 5
     if vol_exp: vol += 5
     score += min(vol, 10)
 
-    # Momentum
     mom = 0
     if rsi_val < 35: mom += 5
     elif rsi_val < 45: mom += 3
@@ -1077,7 +998,6 @@ def score_structure_v6(struct, rsi_val, macd_bull, vol_dec, vol_exp, stoch, tren
     elif stoch < 20: mom += 3
     score += min(mom, 10)
 
-    # Trend alignment — IMPROVED: stronger bonus
     if trend["score"] >= 75: score = min(score + 10, 100)
     elif trend["score"] >= 60: score = min(score + 5, 100)
     elif trend["score"] <= 30: score = max(score - 10, 0)
@@ -1085,7 +1005,7 @@ def score_structure_v6(struct, rsi_val, macd_bull, vol_dec, vol_exp, stoch, tren
     return min(score, 100)
 
 # ═══════════════════════════════════════════════════════════════════
-# ADAPTIVE RISK — IMPROVED: better SL logic for trend continuation
+# ADAPTIVE RISK
 # ═══════════════════════════════════════════════════════════════════
 def calculate_adaptive_risk(struct_type, sub_type, pivots, current, regime, atr,
                              sl_pct, tp1_pct, tp2_pct, tp3_pct, tp4_pct):
@@ -1095,10 +1015,9 @@ def calculate_adaptive_risk(struct_type, sub_type, pivots, current, regime, atr,
     sl_reason = ""
 
     if struct_type == "TREND_CONTINUATION":
-        # For trend continuation, SL is below the last significant trough or ATR-based
         troughs = [p for p in pivots if p["type"] == "trough"]
         if len(troughs) >= 2:
-            sl = troughs[-2]["price"] * 0.98  # Below last significant trough
+            sl = troughs[-2]["price"] * 0.98
             tp1 = current + (current - sl) * 1.5
             tp2 = current + (current - sl) * 2.5
             tp3 = current + (current - sl) * 4.0
@@ -1171,12 +1090,10 @@ def calculate_adaptive_risk(struct_type, sub_type, pivots, current, regime, atr,
         tp4 = current + atr * atr_mult * 6.0
         sl_reason = f"ATR-based ({atr_mult:.1f}x)"
 
-    # Cap SL
     if sl > 0 and (current - sl) / current > max_sl:
         sl = current * (1 - max_sl)
         sl_reason += f" (capped {max_sl * 100:.0f}%)"
 
-    # Ensure TPs are progressive
     if tp1 <= current: tp1 = current * (1 + tp1_pct)
     if tp2 <= tp1: tp2 = current * (1 + tp2_pct)
     if tp3 <= tp2: tp3 = current * (1 + tp3_pct)
@@ -1185,13 +1102,9 @@ def calculate_adaptive_risk(struct_type, sub_type, pivots, current, regime, atr,
     return sl, tp1, tp2, tp3, tp4, sl_reason
 
 # ═══════════════════════════════════════════════════════════════════
-# POSITION SIZING — NEW: based on score and volatility
+# POSITION SIZING
 # ═══════════════════════════════════════════════════════════════════
 def calculate_position_size(score, regime, trend_label, is_mem_locked=False):
-    """
-    Returns position size as percentage of available capital.
-    Higher scores + lower volatility = larger positions.
-    """
     base = 0
     if score >= 85: base = 100
     elif score >= 75: base = 75
@@ -1199,19 +1112,16 @@ def calculate_position_size(score, regime, trend_label, is_mem_locked=False):
     elif score >= 55: base = 25
     else: base = 10
 
-    # Volatility adjustment
     if regime["type"] == "high":
-        base = int(base * 0.7)  # Reduce size in high vol
+        base = int(base * 0.7)
     elif regime["type"] == "low":
-        base = int(base * 1.1)  # Slight increase in low vol
+        base = int(base * 1.1)
 
-    # Trend strength bonus
     if trend_label == "STRONG_UPTREND":
         base = int(base * 1.15)
     elif trend_label == "DOWNTREND":
         base = int(base * 0.5)
 
-    # Memory lock bonus (we've been tracking this structure)
     if is_mem_locked:
         base = int(base * 1.1)
 
@@ -1219,7 +1129,7 @@ def calculate_position_size(score, regime, trend_label, is_mem_locked=False):
 
 
 # ═══════════════════════════════════════════════════════════════════
-# MAIN ANALYSIS — IMPROVED
+# MAIN ANALYSIS
 # ═══════════════════════════════════════════════════════════════════
 def analyze(coin, signal_type="swing"):
     sym = coin["sym"]
@@ -1256,7 +1166,6 @@ def analyze(coin, signal_type="swing"):
     smi = calc_smi(prices)
     div = calc_divergence(prices)
 
-    # Adaptive RSI thresholds
     if phase == "CORRECTING":
         rsi_oversold = 35
     elif phase == "IMPULSING":
@@ -1268,22 +1177,18 @@ def analyze(coin, signal_type="swing"):
     else:
         rsi_oversold = 40
 
-    # Volume analysis
     avg_vol = sum(vols[-20:]) / 20 if len(vols) >= 20 else 1
     vol_dec = (sum(vols[-5:]) / 5) < (sum(vols[-10:-5]) / 5) if len(vols) >= 10 else False
     vol_exp = vols[-1] > avg_vol if vols else False
 
-    # Weekly prices for trend
     weekly_prices, _, _, _ = fetch_klines_full(sym, "1w", 52)
     trend = analyze_trend(prices, weekly_prices, current)
 
-    # Daily bullish check
     in_correction = pct_ath < -20
     daily_bull = current > (sum(prices[-50:]) / 50 if len(prices) >= 50 else current) or in_correction
     if not daily_bull:
         return None
 
-    # Structure recognition
     chart = recognize_chart_structure(
         prices, highs, lows, pivots, current, pct_ath,
         rsi_val, macd_bull, vol_dec, vol_exp, stoch,
@@ -1298,34 +1203,28 @@ def analyze(coin, signal_type="swing"):
     if struct_type in ("DOWNTREND", "DOUBLE_TOP", "UNKNOWN"):
         return None
 
-    # Context adjustment (reduced penalties)
     ctx_adj = context_adjustment(sym, market_ctx)
     final_score = max(0, min(100, conf_score + ctx_adj))
 
     if final_score < 35:
         return None
 
-    # HTF validation
     htf_ok, htf_note = htf_validation(sym)
     if not htf_ok:
         print(f"    {htf_note}")
         return None
 
-    # RSI filter
     if rsi_val > 75:
         return None
 
-    # Risk calculation
     sl, tp1, tp2, tp3, tp4, sl_reason = calculate_adaptive_risk(
         struct_type, sub_type, pivots, current, regime, atr,
         sl_pct, tp1_pct, tp2_pct, tp3_pct, tp4_pct
     )
 
-    # Position sizing
     is_locked = chart.get("locked", False)
     position_size = calculate_position_size(final_score, regime, trend["label"], is_locked)
 
-    # Confidence label
     if final_score >= 85:
         conf = "HIGH"
     elif final_score >= 70:
@@ -1359,7 +1258,7 @@ def analyze(coin, signal_type="swing"):
     }
 
 # ═══════════════════════════════════════════════════════════════════
-# FORMATTING
+# FORMATTING — FIXED: no f-string with curly braces inside
 # ═══════════════════════════════════════════════════════════════════
 def fp(p):
     if not p and p != 0:
@@ -1376,74 +1275,45 @@ def build_msg(sig):
     is_sc = sig["type"] == "SCALP"
     icon = "⚡" if is_sc else "📈"
     pos = sig.get("position_size", 50)
-    pos_str = f"{pos}% Position" if pos < 100 else "Full Position"
+    pos_str = str(pos) + "% Position" if pos < 100 else "Full Position"
 
-    locked = "🔒 " if sig.get("is_locked") else ""
+    locked_str = ""
+    if sig.get("is_locked"):
+        locked_str = "🔒 "
 
-    msg = (
-        f"{icon} <b>{locked}{sig['type']} — {sig['sym']}/USDT</b>
-
-"
-        f"📊 Structure: {sig['struct_label']}
-"
-        f"📈 Trend: {sig['trend']} | Phase: {sig['phase']}
-"
-        f"📏 Position: {pos_str}
-
-"
-        f"💵 Entry:  {fp(sig['current'] * 0.99)} – {fp(sig['current'] * 1.01)}
-"
-        f"🛑 SL:     {fp(sig['sl'])}
-"
-        f"   ({sig['sl_reason']})
-
-"
-        f"🎯 TP1:   {fp(sig['tp1'])}
-"
-        f"🎯 TP2:   {fp(sig['tp2'])}
-"
-        f"🎯 TP3:   {fp(sig['tp3'])}
-"
-        f"🎯 TP4:   {fp(sig['tp4'])}
-
-"
-        f"⏱ Hold: {sig['hold']}
-"
-        f"⚡ Score: {sig['score']}/100 — {sig['conf']}
-"
-        f"📊 RSI: {sig['rsi']:.0f} | Stoch: {sig['stoch']:.0f}
-"
-        f"🌊 Regime: {sig['regime']}
-"
-    )
+    msg = icon + " <b>" + locked_str + sig["type"] + " — " + sig["sym"] + "/USDT</b>\n\n"
+    msg += "📊 Structure: " + sig["struct_label"] + "\n"
+    msg += "📈 Trend: " + sig["trend"] + " | Phase: " + sig["phase"] + "\n"
+    msg += "📏 Position: " + pos_str + "\n\n"
+    msg += "💵 Entry:  " + fp(sig["current"] * 0.99) + " – " + fp(sig["current"] * 1.01) + "\n"
+    msg += "🛑 SL:     " + fp(sig["sl"]) + "\n"
+    msg += "   (" + sig["sl_reason"] + ")\n\n"
+    msg += "🎯 TP1:   " + fp(sig["tp1"]) + "\n"
+    msg += "🎯 TP2:   " + fp(sig["tp2"]) + "\n"
+    msg += "🎯 TP3:   " + fp(sig["tp3"]) + "\n"
+    msg += "🎯 TP4:   " + fp(sig["tp4"]) + "\n\n"
+    msg += "⏱ Hold: " + sig["hold"] + "\n"
+    msg += "⚡ Score: " + str(sig["score"]) + "/100 — " + sig["conf"] + "\n"
+    msg += "📊 RSI: " + str(round(sig["rsi"])) + " | Stoch: " + str(round(sig["stoch"])) + "\n"
+    msg += "🌊 Regime: " + sig["regime"] + "\n"
 
     if sig.get("divergence"):
-        msg += "🔄 Bullish Divergence detected
-"
+        msg += "🔄 Bullish Divergence detected\n"
 
     if sig.get("alternate"):
-        msg += f"⚠️ Alternate: {sig['alternate']}
-"
+        msg += "⚠️ Alternate: " + sig["alternate"] + "\n"
 
     return msg
 
 def build_watch_msg(sym, sig_type, current, score, rsi, struct_label, reason, position_size=0):
     icon = "⚡" if sig_type == "SCALP" else "📈"
-    return (
-        f"👁 <b>WATCH — {sym}/USDT ({sig_type})</b>
-
-"
-        f"Pattern: {struct_label}
-"
-        f"Price: {fp(current)} | RSI: {rsi:.0f}
-"
-        f"Score: {score}/100 | Suggested: {position_size}%
-"
-        f"Status: {reason}
-
-"
-        f"<i>Not a signal yet — monitoring</i>"
-    )
+    msg = "👁 <b>WATCH — " + sym + "/USDT (" + sig_type + ")</b>\n\n"
+    msg += "Pattern: " + struct_label + "\n"
+    msg += "Price: " + fp(current) + " | RSI: " + str(round(rsi)) + "\n"
+    msg += "Score: " + str(score) + "/100 | Suggested: " + str(position_size) + "%\n"
+    msg += "Status: " + reason + "\n\n"
+    msg += "<i>Not a signal yet — monitoring</i>"
+    return msg
 
 # ═══════════════════════════════════════════════════════════════════
 # PRICE ALERTS
@@ -1475,78 +1345,53 @@ def check_price_alerts():
         tp3 = trade["tp3"]
         tp4 = trade["tp4"]
 
-        # Stop Loss
         if current <= sl and not trade.get("closed"):
             loss = (current - entry) / entry * 100
-            send_msg(
-                f"🔴 <b>STOP LOSS — {sym}/USDT</b>
-"
-                f"{icon} {sig_type} Closed
-"
-                f"Price: {fp(current)} | SL: {fp(sl)}
-"
-                f"Loss: {loss:.1f}%
-"
-                f"<i>Exit full position.</i>"
-            )
+            msg = "🔴 <b>STOP LOSS — " + sym + "/USDT</b>\n"
+            msg += icon + " " + sig_type + " Closed\n"
+            msg += "Price: " + fp(current) + " | SL: " + fp(sl) + "\n"
+            msg += "Loss: " + str(round(loss, 1)) + "%\n"
+            msg += "<i>Exit full position.</i>"
+            send_msg(msg)
             active_trades[key]["closed"] = True
             continue
 
-        # TP1
         if current >= tp1 and not trade.get("hit_tp1"):
             profit = (current - entry) / entry * 100
-            send_msg(
-                f"🎯 <b>TP1 HIT — {sym}/USDT</b>
-"
-                f"Price: {fp(current)}
-"
-                f"Profit: +{profit:.1f}%
-"
-                f"Exit 25% | SL → entry: {fp(entry)}"
-            )
+            msg = "🎯 <b>TP1 HIT — " + sym + "/USDT</b>\n"
+            msg += "Price: " + fp(current) + "\n"
+            msg += "Profit: +" + str(round(profit, 1)) + "%\n"
+            msg += "Exit 25% | SL → entry: " + fp(entry)
+            send_msg(msg)
             active_trades[key]["hit_tp1"] = True
             active_trades[key]["sl"] = entry
 
-        # TP2
         if current >= tp2 and not trade.get("hit_tp2"):
             profit = (current - entry) / entry * 100
-            send_msg(
-                f"🎯 <b>TP2 HIT — {sym}/USDT</b>
-"
-                f"Price: {fp(current)}
-"
-                f"Profit: +{profit:.1f}%
-"
-                f"Exit 25% | SL → TP1: {fp(tp1)}"
-            )
+            msg = "🎯 <b>TP2 HIT — " + sym + "/USDT</b>\n"
+            msg += "Price: " + fp(current) + "\n"
+            msg += "Profit: +" + str(round(profit, 1)) + "%\n"
+            msg += "Exit 25% | SL → TP1: " + fp(tp1)
+            send_msg(msg)
             active_trades[key]["hit_tp2"] = True
             active_trades[key]["sl"] = tp1
 
-        # TP3
         if current >= tp3 and not trade.get("hit_tp3"):
             profit = (current - entry) / entry * 100
-            send_msg(
-                f"🎯 <b>TP3 HIT — {sym}/USDT</b>
-"
-                f"Price: {fp(current)}
-"
-                f"Profit: +{profit:.1f}%
-"
-                f"Exit 25% | SL → TP2: {fp(tp2)}"
-            )
+            msg = "🎯 <b>TP3 HIT — " + sym + "/USDT</b>\n"
+            msg += "Price: " + fp(current) + "\n"
+            msg += "Profit: +" + str(round(profit, 1)) + "%\n"
+            msg += "Exit 25% | SL → TP2: " + fp(tp2)
+            send_msg(msg)
             active_trades[key]["hit_tp3"] = True
             active_trades[key]["sl"] = tp2
 
-        # TP4
         if current >= tp4 and not trade.get("hit_tp4"):
             profit = (current - entry) / entry * 100
-            send_msg(
-                f"🏆 <b>TP4 HIT — {sym}/USDT</b>
-"
-                f"Price: {fp(current)}
-"
-                f"Full profit: +{profit:.1f}%! | Trade complete!"
-            )
+            msg = "🏆 <b>TP4 HIT — " + sym + "/USDT</b>\n"
+            msg += "Price: " + fp(current) + "\n"
+            msg += "Full profit: +" + str(round(profit, 1)) + "%! | Trade complete!"
+            send_msg(msg)
             active_trades[key]["hit_tp4"] = True
             active_trades[key]["closed"] = True
 
@@ -1559,7 +1404,7 @@ def monitor_watch_coins():
 
     now = time.time()
     for key, watch_time in list(sent_watches.items()):
-        if now - watch_time > 21600:  # 6 hours
+        if now - watch_time > 21600:
             continue
 
         sym = key.split("_")[0]
@@ -1600,7 +1445,6 @@ def monitor_watch_coins():
 def main():
     global scan_count, market_ctx
 
-    # Initialize Telegram
     tg_ok = init_telegram()
 
     total = len(HALAL_WATCHLIST)
@@ -1608,45 +1452,32 @@ def main():
     t2 = [c["sym"] for c in HALAL_WATCHLIST if c["tier"] == 2]
     t3 = [c["sym"] for c in HALAL_WATCHLIST if c["tier"] == 3]
 
-    print(f"╔══════════════════════════════════════════════════════════════╗")
-    print(f"║  EW STRATEGY V6 — ADAPTIVE STRUCTURE-AWARE BOT               ║")
-    print(f"║  {total} coins | Trend continuation enabled | Memory locks     ║")
-    print(f"╚══════════════════════════════════════════════════════════════╝")
+    print("=" * 60)
+    print("EW STRATEGY V6 — ADAPTIVE STRUCTURE-AWARE BOT")
+    print(f"{total} coins | Trend continuation | Memory locks")
+    print("=" * 60)
 
     if tg_ok:
-        send_msg(
-            f"🕒 <b>EW Strategy V6 — Active</b>
-"
-            f"━━━━━━━━━━━━━━━━━━━
-"
-            f"✅ Adaptive — Chart decides the method
-"
-            f"📊 Volatility regime detection
-"
-            f"🔄 Trend continuation detection (NEW)
-"
-            f"🔒 Structure memory (anti flip-flop)
-"
-            f"📈 HTF weekly validation
-"
-            f"💰 Position sizing by score & vol
-"
-            f"━━━━━━━━━━━━━━━━━━━
-"
-            f"⭐⭐⭐ T1 ({len(t1)}): {', '.join(t1[:8])}...
-"
-            f"⭐⭐ T2 ({len(t2)}): {', '.join(t2[:8])}...
-"
-            f"⭐ T3 ({len(t3)}): {', '.join(t3[:8])}..."
-        )
+        msg = "🕒 <b>EW Strategy V6 — Active</b>\n"
+        msg += "━━━━━━━━━━━━━━━━━━━\n"
+        msg += "✅ Adaptive — Chart decides the method\n"
+        msg += "📊 Volatility regime detection\n"
+        msg += "🔄 Trend continuation detection (NEW)\n"
+        msg += "🔒 Structure memory (anti flip-flop)\n"
+        msg += "📈 HTF weekly validation\n"
+        msg += "💰 Position sizing by score & vol\n"
+        msg += "━━━━━━━━━━━━━━━━━━━\n"
+        msg += "⭐⭐⭐ T1 (" + str(len(t1)) + "): " + ", ".join(t1[:8]) + "...\n"
+        msg += "⭐⭐ T2 (" + str(len(t2)) + "): " + ", ".join(t2[:8]) + "...\n"
+        msg += "⭐ T3 (" + str(len(t3)) + "): " + ", ".join(t3[:8]) + "..."
+        send_msg(msg)
     else:
         print("Telegram not configured — running in console-only mode.")
 
     while True:
         scan_count += 1
         now = datetime.now().strftime("%H:%M:%S")
-        print(f"
-[{now}] Scan #{scan_count}")
+        print(f"\n[{now}] Scan #{scan_count}")
 
         market_ctx = fetch_market_context()
         signals = 0
@@ -1731,40 +1562,29 @@ def main():
                 print(f"err:{e}")
                 time.sleep(5)
 
-        print(f"
-Scan #{scan_count} — {signals} signal(s), {watches} watch(es) — next in 15min")
+        print(f"\nScan #{scan_count} — {signals} signal(s), {watches} watch(es) — next in 15min")
         active_count = len([t for t in active_trades.values() if not t.get("closed")])
         print(f"  Active trades: {active_count} | Watch list: {len(sent_watches)}")
 
-        # Price alerts and watch monitoring during the 15-min wait
         for _ in range(3):
-            time.sleep(300)  # 5 minutes
+            time.sleep(300)
             check_price_alerts()
             if sent_watches:
                 monitor_watch_coins()
 
-        # Heartbeat every 96 scans (24 hours)
         if scan_count % 96 == 0:
-            send_msg(
-                f"💓 <b>Heartbeat</b>
-"
-                f"Scans: {scan_count} | Coins: {total}
-"
-                f"Active: {active_count}
-"
-                f"{datetime.now().strftime('%Y-%m-%d %H:%M')} UTC"
-            )
+            msg = "💓 <b>Heartbeat</b>\n"
+            msg += "Scans: " + str(scan_count) + " | Coins: " + str(total) + "\n"
+            msg += "Active: " + str(active_count) + "\n"
+            msg += datetime.now().strftime("%Y-%m-%d %H:%M") + " UTC"
+            send_msg(msg)
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("
-
-Bot stopped by user.")
+        print("\n\nBot stopped by user.")
     except Exception as e:
-        print(f"
-
-Fatal error: {e}")
+        print(f"\n\nFatal error: {e}")
         import traceback
         traceback.print_exc()
