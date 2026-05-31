@@ -1,1 +1,2 @@
-worker: python signal_bot.py
+web: python signal_bot.py
+
