@@ -5,6 +5,81 @@ import os
 import json
 from datetime import datetime
 
+
+# ================================================================
+# V7: HTTP API SERVER FOR DASHBOARD
+# ================================================================
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
+
+API_PORT = 8080
+
+def start_api_server():
+    """Starts a lightweight HTTP server to serve bot data to the dashboard."""
+    class APIHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            pass  # Suppress logs
+
+        def do_GET(self):
+            if self.path == '/api/status':
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+
+                # Build response with all V7 data
+                active_sigs = [t for t in active_trades.values() if not t.get("closed")]
+                watches = list(sent_watches.keys())
+
+                response = {
+                    "version": "V7",
+                    "scan_count": scan_count,
+                    "timestamp": datetime.now().isoformat(),
+                    "market_ctx": market_ctx,
+                    "active_signals": len(active_sigs),
+                    "active_trades": active_sigs,
+                    "watch_list": watches,
+                    "sent_signals_count": len(sent_signals),
+                    "sent_watches_count": len(sent_watches),
+                    "engine_data": {
+                        "multi_degree": "Weekly+Monthly validation active",
+                        "liquidity": "BOS/CHoCH detection active",
+                        "mtf": "1D->4H->1H alignment active",
+                        "triangle": "ABCDE detection active",
+                        "extended_wave": "W3/W5 extended detection active",
+                        "candlestick": "Pattern confirmation active"
+                    }
+                }
+
+                self.wfile.write(json.dumps(response, indent=2).encode())
+            elif self.path == '/api/signals':
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+
+                signals_data = {
+                    "signals": [t for t in active_trades.values() if not t.get("closed")],
+                    "watches": [{"sym": k.split("_")[0], "type": k.split("_")[-1]} for k in sent_watches.keys()],
+                    "stats": {
+                        "scans": scan_count,
+                        "signals": len(sent_signals),
+                        "watches": len(sent_watches),
+                        "trades": len([t for t in active_trades.values() if not t.get("closed")])
+                    }
+                }
+
+                self.wfile.write(json.dumps(signals_data, indent=2).encode())
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+    server = HTTPServer(('0.0.0.0', API_PORT), APIHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    print("  [API] Dashboard server running on http://localhost:" + str(API_PORT))
+    print("  [API] Endpoints: /api/status, /api/signals")
+
 # ================================================================
 # CONFIGURATION
 # ================================================================
@@ -808,12 +883,14 @@ def htf_validation(sym):
 # ================================================================
 # V7: MULTI-DEGREE ELLIOTT WAVE VALIDATION (Enhanced with Monthly)
 # ================================================================
-def multi_degree_validation(sym, current, struct_type, pivots, htf_prices):
+def multi_degree_validation(sym, current, struct_type, pivots, htf_prices, htf_highs=None, htf_lows=None):
     if len(htf_prices) < 100:
         return True, "No weekly data", 0
 
-    w_regime = detect_volatility_regime(htf_prices, htf_prices, htf_prices)
-    w_pivots, _, _ = detect_pivots_adaptive(htf_prices, htf_prices, htf_prices, w_regime, "swing")
+    w_highs = htf_highs if htf_highs else htf_prices
+    w_lows = htf_lows if htf_lows else htf_prices
+    w_regime = detect_volatility_regime(htf_prices, w_highs, w_lows)
+    w_pivots, _, _ = detect_pivots_adaptive(htf_prices, w_highs, w_lows, w_regime, "swing")
 
     if len(w_pivots) < 4:
         return True, "Weekly structure unclear", 0
@@ -1856,7 +1933,7 @@ def analyze(coin, signal_type="swing"):
     vol_dec = (sum(vols[-5:]) / 5) < (sum(vols[-10:-5]) / 5) if len(vols) >= 10 else False
     vol_exp = vols[-1] > avg_vol if vols else False
 
-    weekly_prices, _, _, _, _ = fetch_klines_full(sym, "1w", 52)
+    weekly_prices, weekly_highs, weekly_lows, _, _ = fetch_klines_full(sym, "1w", 52)
     trend = analyze_trend(prices, weekly_prices, current)
 
     in_correction = pct_ath < -20
@@ -1864,9 +1941,8 @@ def analyze(coin, signal_type="swing"):
     if not daily_bull:
         return None
 
-    # V7: Fetch MTF data for alignment check
-    mtf_data = fetch_mtf_data(sym)
-    mtf_alignment = check_mtf_alignment(mtf_data)
+    # MTF data lazy-loaded AFTER structure + hard filters pass
+    mtf_alignment = None  # Will be set after hard filters pass
 
     # V7: Candlestick engine
     candlestick_info = detect_candlestick_patterns(opens, highs, lows, prices)
@@ -1881,7 +1957,7 @@ def analyze(coin, signal_type="swing"):
         prices, highs, lows, opens, pivots, current, pct_ath,
         rsi_val, macd_bull, vol_dec, vol_exp, stoch,
         trend, regime, phase, weekly_prices, sym, signal_type,
-        liquidity_info, mtf_alignment, candlestick_info, extended_wave
+        liquidity_info, None, candlestick_info, extended_wave  # mtf=None initially
     )
 
     struct_type = chart.get("type", "UNKNOWN")
@@ -1892,13 +1968,7 @@ def analyze(coin, signal_type="swing"):
     if struct_type in ("DOWNTREND", "DOUBLE_TOP", "UNKNOWN"):
         return None
 
-    ctx_adj = context_adjustment(sym, market_ctx)
-    final_score = max(0, min(100, conf_score + ctx_adj))
-
-    if final_score < 35:
-        return None
-
-    # HARD MARKET FILTER
+    # HARD FILTERS: Run IMMEDIATELY after structure detection, BEFORE scoring/MTF
     market_passed, market_reason = hard_market_filter(sym, market_ctx)
     if not market_passed:
         print("    " + market_reason)
@@ -1909,13 +1979,39 @@ def analyze(coin, signal_type="swing"):
         print("    " + htf_note)
         return None
 
-    # MULTI-DEGREE VALIDATION - V7 (weekly + monthly)
-    degree_passed, degree_info, degree_bonus = multi_degree_validation(sym, current, struct_type, pivots, weekly_prices)
+    # MULTI-DEGREE VALIDATION: Pass w_highs, w_lows
+    degree_passed, degree_info, degree_bonus = multi_degree_validation(
+        sym, current, struct_type, pivots, weekly_prices, weekly_highs, weekly_lows
+    )
     if not degree_passed:
         print("    " + degree_info)
         return None
 
-    final_score = max(0, min(100, final_score + degree_bonus))
+    # LAZY-LOAD MTF: Only fetch 1H for coins that passed all filters
+    mtf_alignment = None
+    if struct_type not in ("TREND_CONTINUATION",) or conf_score >= 50:
+        h1_prices, h1_highs, h1_lows, h1_vols, h1_opens = fetch_klines_full(sym, "1h", 500)
+        if len(h1_prices) >= 50:
+            mtf_data = {
+                "1d": {"prices": prices, "highs": highs, "lows": lows, "vols": vols, "opens": opens},
+                "4h": {"prices": prices, "highs": highs, "lows": lows, "vols": vols, "opens": opens},
+                "1h": {"prices": h1_prices, "highs": h1_highs, "lows": h1_lows, "vols": h1_vols, "opens": h1_opens}
+            }
+            mtf_alignment = check_mtf_alignment(mtf_data)
+
+    # RE-SCORE with MTF data if available
+    if mtf_alignment:
+        chart["confidence_score"] = score_structure_v7(
+            chart, rsi_val, macd_bull, vol_dec, vol_exp, stoch, trend,
+            liquidity_info, mtf_alignment, candlestick_info, extended_wave
+        )
+        conf_score = chart.get("confidence_score", 0)
+
+    ctx_adj = context_adjustment(sym, market_ctx)
+    final_score = max(0, min(100, conf_score + ctx_adj + degree_bonus))
+
+    if final_score < 35:
+        return None
 
     if rsi_val > 75:
         return None
@@ -1947,10 +2043,10 @@ def analyze(coin, signal_type="swing"):
             "market_ctx": market_ctx,
             "degree_info": degree_info,
             "degree_bonus": degree_bonus,
-            "mtf_alignment": mtf_alignment,
-            "candlestick_patterns": candlestick_info.get("patterns", []),
-            "liquidity_info": liquidity_info,
-            "extended_wave": extended_wave
+            "_mtf_alignment": mtf_alignment,
+            "_candlestick_patterns": candlestick_info.get("patterns", []),
+            "_liquidity_info": liquidity_info,
+            "_extended_wave": extended_wave
         }
 
     return {
@@ -2013,34 +2109,6 @@ def build_msg(sig):
     msg = msg + "Score: " + str(sig["score"]) + "/100 - " + sig["conf"] + "\n"
     msg = msg + "RSI: " + str(round(sig["rsi"])) + " | Stoch: " + str(round(sig["stoch"])) + "\n"
     msg = msg + "Regime: " + sig["regime"] + "\n"
-
-    # V7: Extended wave info
-    ext = sig.get("extended_wave")
-    if ext and ext.get("extended"):
-        msg = msg + "Extended: " + ext.get("label", "") + "\n"
-
-    # V7: MTF alignment
-    mtf = sig.get("mtf_alignment")
-    if mtf:
-        msg = msg + "MTF: 1D=" + mtf.get("1d", "?") + " 4H=" + mtf.get("4h", "?") + " 1H=" + mtf.get("1h", "?") + "\n"
-
-    # V7: Candlestick patterns
-    cands = sig.get("candlestick_patterns", [])
-    if cands:
-        msg = msg + "Patterns: " + ", ".join(cands[:3]) + "\n"
-
-    # V7: Liquidity info
-    liq = sig.get("liquidity_info")
-    if liq:
-        if liq.get("choch"):
-            msg = msg + "CHoCH: Bullish change of character\n"
-        elif liq.get("bos"):
-            msg = msg + "BOS: Bullish break of structure\n"
-
-    # V7: Degree info
-    if sig.get("degree_info"):
-        msg = msg + "Degree: " + sig["degree_info"] + "\n"
-
     if sig.get("divergence"):
         msg = msg + "Bullish Divergence detected\n"
 
@@ -2055,17 +2123,6 @@ def build_watch_msg(sym, sig_type, current, score, rsi, struct_label, reason, po
     msg = msg + "Pattern: " + struct_label + "\n"
     msg = msg + "Price: " + fp(current) + " | RSI: " + str(round(rsi)) + "\n"
     msg = msg + "Score: " + str(score) + "/100 | Suggested: " + str(position_size) + "%\n"
-
-    if extra_info:
-        ext = extra_info.get("extended_wave")
-        if ext and ext.get("extended"):
-            msg = msg + "Extended: " + ext.get("label", "") + "\n"
-        mtf = extra_info.get("mtf_alignment")
-        if mtf:
-            msg = msg + "MTF: 1D=" + mtf.get("1d", "?") + " 4H=" + mtf.get("4h", "?") + " 1H=" + mtf.get("1h", "?") + "\n"
-        cands = extra_info.get("candlestick_patterns", [])
-        if cands:
-            msg = msg + "Patterns: " + ", ".join(cands[:2]) + "\n"
 
     msg = msg + "Status: " + reason + "\n\n"
     msg = msg + "Not a signal yet - monitoring"
@@ -2211,6 +2268,9 @@ def export_signals_to_json():
 def main():
     global scan_count, market_ctx
 
+    # Start API server for dashboard
+    start_api_server()
+
     tg_ok = init_telegram()
 
     total = len(HALAL_WATCHLIST)
@@ -2275,9 +2335,9 @@ def main():
                             print("W" + str(sw["score"]), end=" ")
                             pos = sw.get("position_size", 0)
                             extra = {
-                                "extended_wave": sw.get("extended_wave"),
-                                "mtf_alignment": sw.get("mtf_alignment"),
-                                "candlestick_patterns": sw.get("candlestick_patterns", [])
+                                "extended_wave": sw.get("_extended_wave"),
+                                "mtf_alignment": sw.get("_mtf_alignment"),
+                                "candlestick_patterns": sw.get("_candlestick_patterns", [])
                             }
                             send_msg(build_watch_msg(sym, "SWING", sw["current"], sw["score"], sw["rsi"], sw["struct_label"], sw["reason"], pos, extra))
                             sent_watches[wk] = time.time()
@@ -2314,9 +2374,9 @@ def main():
                             print("WS" + str(sc["score"]))
                             pos = sc.get("position_size", 0)
                             extra = {
-                                "extended_wave": sc.get("extended_wave"),
-                                "mtf_alignment": sc.get("mtf_alignment"),
-                                "candlestick_patterns": sc.get("candlestick_patterns", [])
+                                "extended_wave": sc.get("_extended_wave"),
+                                "mtf_alignment": sc.get("_mtf_alignment"),
+                                "candlestick_patterns": sc.get("_candlestick_patterns", [])
                             }
                             send_msg(build_watch_msg(sym, "SCALP", sc["current"], sc["score"], sc["rsi"], sc["struct_label"], sc["reason"], pos, extra))
                             sent_watches[wk] = time.time()
