@@ -1963,9 +1963,10 @@ def analyze(coin, signal_type="swing"):
     trend = analyze_trend(prices, weekly_prices, current)
 
     in_correction = pct_ath < -20
-    daily_bull = current > (sum(prices[-50:]) / 50 if len(prices) >= 50 else current) or in_correction
+    ma50 = sum(prices[-50:]) / 50 if len(prices) >= 50 else current
+    daily_bull = current > ma50 or in_correction
     if not daily_bull:
-        print("    [" + signal_type + "] " + sym + " BLOCKED: not daily bullish MA50=" + str(round(ma50,2)) + " current=" + str(round(current,2)))
+        print("    [" + signal_type + "] " + sym + " BLOCKED: not daily bullish MA50=" + str(round(ma50,2)) + " cur=" + str(round(current,2)))
         return None
 
     # MTF data lazy-loaded AFTER structure + hard filters pass
