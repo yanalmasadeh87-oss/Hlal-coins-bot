@@ -202,6 +202,9 @@ def fetch_market_context():
         r1 = requests.get("https://api.alternative.me/v2/global/", timeout=10)
         g = r1.json().get("data", {})
         btc_dom = float(g.get("bitcoin_percentage_of_market_cap", 50))
+        # Sanity check — BTC.D must be between 30% and 75%
+        if btc_dom < 30 or btc_dom > 75:
+            btc_dom = 50  # Alternative.me returned bad data — use neutral
         total = float(g.get("quotes", {}).get("USD", {}).get("total_market_cap", 0))
 
         r2 = requests.get("https://api.alternative.me/v2/ticker/?limit=2&structure=array", timeout=10)
@@ -1981,12 +1984,18 @@ def analyze(coin, signal_type="swing"):
     # V7: Extended wave detection
     extended_wave = detect_extended_wave(pivots, current)
 
-    chart = recognize_chart_structure(
-        prices, highs, lows, opens, pivots, current, pct_ath,
-        rsi_val, macd_bull, vol_dec, vol_exp, stoch,
-        trend, regime, phase, weekly_prices, sym, signal_type,
-        liquidity_info, None, candlestick_info, extended_wave  # mtf=None initially
-    )
+    try:
+        chart = recognize_chart_structure(
+            prices, highs, lows, opens, pivots, current, pct_ath,
+            rsi_val, macd_bull, vol_dec, vol_exp, stoch,
+            trend, regime, phase, weekly_prices, sym, signal_type,
+            liquidity_info, None, candlestick_info, extended_wave
+        )
+    except Exception as e:
+        import traceback
+        print("    [" + signal_type + "] " + sym + " ERROR in recognize_chart_structure: " + str(e))
+        print("    " + traceback.format_exc().split("\n")[-3])
+        return None
 
     struct_type = chart.get("type", "UNKNOWN")
     struct_label = chart.get("label", "Unknown")
@@ -2016,16 +2025,25 @@ def analyze(coin, signal_type="swing"):
         print("    " + degree_info)
         return None
 
-    # LAZY-LOAD MTF: Only fetch 1H for coins that passed all filters
+    # LAZY-LOAD MTF: Each slot uses its own real timeframe data
     mtf_alignment = None
     if struct_type not in ("TREND_CONTINUATION",) or conf_score >= 50:
         h1_prices, h1_highs, h1_lows, h1_vols, h1_opens = fetch_klines_full(sym, "1h", 500)
         if len(h1_prices) >= 50:
-            mtf_data = {
-                "1d": {"prices": prices, "highs": highs, "lows": lows, "vols": vols, "opens": opens},
-                "4h": {"prices": prices, "highs": highs, "lows": lows, "vols": vols, "opens": opens},
-                "1h": {"prices": h1_prices, "highs": h1_highs, "lows": h1_lows, "vols": h1_vols, "opens": h1_opens}
-            }
+            if signal_type == "swing":
+                h4_p, h4_h, h4_l, h4_v, h4_o = fetch_klines_full(sym, "4h", 500)
+                mtf_data = {
+                    "1d": {"prices": prices,    "highs": highs,   "lows": lows,   "vols": vols,   "opens": opens},
+                    "4h": {"prices": h4_p,      "highs": h4_h,    "lows": h4_l,   "vols": h4_v,   "opens": h4_o},
+                    "1h": {"prices": h1_prices, "highs": h1_highs,"lows": h1_lows,"vols": h1_vols,"opens": h1_opens}
+                }
+            else:
+                d1_p, d1_h, d1_l, d1_v, d1_o = fetch_klines_full(sym, "1d", 200)
+                mtf_data = {
+                    "1d": {"prices": d1_p,      "highs": d1_h,    "lows": d1_l,   "vols": d1_v,   "opens": d1_o},
+                    "4h": {"prices": prices,    "highs": highs,   "lows": lows,   "vols": vols,   "opens": opens},
+                    "1h": {"prices": h1_prices, "highs": h1_highs,"lows": h1_lows,"vols": h1_vols,"opens": h1_opens}
+                }
             mtf_alignment = check_mtf_alignment(mtf_data)
 
     # RE-SCORE with MTF data if available
@@ -2044,6 +2062,7 @@ def analyze(coin, signal_type="swing"):
         return None
 
     if rsi_val > 75:
+        print("    [" + signal_type + "] " + sym + " BLOCKED: RSI overbought=" + str(round(rsi_val,1)))
         return None
 
     sl, tp1, tp2, tp3, tp4, sl_reason = calculate_adaptive_risk(
