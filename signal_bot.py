@@ -12,7 +12,7 @@ from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
-API_PORT = int(os.getenv("PORT", 8080))
+API_PORT = 8080
 
 def start_api_server():
     """Starts a lightweight HTTP server to serve bot data to the dashboard."""
@@ -21,13 +21,7 @@ def start_api_server():
             pass  # Suppress logs
 
         def do_GET(self):
-            if self.path == '/ping' or self.path == '/':
-                self.send_response(200)
-                self.send_header('Content-type', 'text/plain')
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.end_headers()
-                self.wfile.write(b'OK')
-            elif self.path == '/api/status':
+            if self.path == '/api/status':
                 self.send_response(200)
                 self.send_header('Content-type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
@@ -84,23 +78,7 @@ def start_api_server():
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     print("  [API] Dashboard server running on http://localhost:" + str(API_PORT))
-    print("  [API] Endpoints: /ping, /api/status, /api/signals")
-
-    # Keep-alive: self-ping every 10 minutes to prevent Render free tier spin-down
-    def keep_alive():
-        import urllib.request
-        while True:
-            time.sleep(600)
-            try:
-                # Try to detect our own public URL from environment, fallback to localhost
-                host = os.getenv("RENDER_EXTERNAL_URL", "http://localhost:" + str(API_PORT))
-                req = urllib.request.Request(host + "/ping", method="HEAD")
-                req.add_header("User-Agent", "EW-Bot-KeepAlive")
-                urllib.request.urlopen(req, timeout=10)
-            except Exception:
-                pass
-    ka_thread = threading.Thread(target=keep_alive, daemon=True)
-    ka_thread.start()
+    print("  [API] Endpoints: /api/status, /api/signals")
 
 # ================================================================
 # CONFIGURATION
@@ -2009,16 +1987,28 @@ def analyze(coin, signal_type="swing"):
         print("    " + degree_info)
         return None
 
-    # LAZY-LOAD MTF: Only fetch 1H for coins that passed all filters
+    # LAZY-LOAD MTF: Only fetch after all filters passed
+    # Fix A: Each timeframe slot must use its own real data
     mtf_alignment = None
     if struct_type not in ("TREND_CONTINUATION",) or conf_score >= 50:
         h1_prices, h1_highs, h1_lows, h1_vols, h1_opens = fetch_klines_full(sym, "1h", 500)
         if len(h1_prices) >= 50:
-            mtf_data = {
-                "1d": {"prices": prices, "highs": highs, "lows": lows, "vols": vols, "opens": opens},
-                "4h": {"prices": prices, "highs": highs, "lows": lows, "vols": vols, "opens": opens},
-                "1h": {"prices": h1_prices, "highs": h1_highs, "lows": h1_lows, "vols": h1_vols, "opens": h1_opens}
-            }
+            if signal_type == "swing":
+                # Swing uses 1D — fetch 4H separately for MTF
+                h4_p, h4_h, h4_l, h4_v, h4_o = fetch_klines_full(sym, "4h", 500)
+                mtf_data = {
+                    "1d": {"prices": prices,   "highs": highs,   "lows": lows,   "vols": vols,   "opens": opens},
+                    "4h": {"prices": h4_p,     "highs": h4_h,    "lows": h4_l,   "vols": h4_v,   "opens": h4_o},
+                    "1h": {"prices": h1_prices, "highs": h1_highs,"lows": h1_lows,"vols": h1_vols,"opens": h1_opens}
+                }
+            else:
+                # Scalp uses 4H — fetch 1D separately for MTF
+                d1_p, d1_h, d1_l, d1_v, d1_o = fetch_klines_full(sym, "1d", 200)
+                mtf_data = {
+                    "1d": {"prices": d1_p,     "highs": d1_h,    "lows": d1_l,   "vols": d1_v,   "opens": d1_o},
+                    "4h": {"prices": prices,   "highs": highs,   "lows": lows,   "vols": vols,   "opens": opens},
+                    "1h": {"prices": h1_prices, "highs": h1_highs,"lows": h1_lows,"vols": h1_vols,"opens": h1_opens}
+                }
             mtf_alignment = check_mtf_alignment(mtf_data)
 
     # RE-SCORE with MTF data if available
@@ -2107,36 +2097,21 @@ def fp(p):
     return "$" + "{:.7f}".format(p)
 
 def build_msg(sig):
+    # Clean format: entry, SL, TP1-4, hold, score only
+    # All engine data (MTF, candlestick, liquidity, structure) goes to dashboard
     is_sc = sig["type"] == "SCALP"
-    icon = "[SCALP]" if is_sc else "[SWING]"
-    pos = sig.get("position_size", 50)
-    pos_str = str(pos) + "% Position" if pos < 100 else "Full Position"
-
-    locked_str = ""
-    if sig.get("is_locked"):
-        locked_str = "[LOCKED] "
-
-    msg = icon + " " + locked_str + sig["type"] + " - " + sig["sym"] + "/USDT\n\n"
-    msg = msg + "Structure: " + sig["struct_label"] + "\n"
-    msg = msg + "Trend: " + sig["trend"] + " | Phase: " + sig["phase"] + "\n"
-    msg = msg + "Position: " + pos_str + "\n\n"
-    msg = msg + "Entry:  " + fp(sig["current"] * 0.99) + " - " + fp(sig["current"] * 1.01) + "\n"
-    msg = msg + "SL:     " + fp(sig["sl"]) + "\n"
-    msg = msg + "   (" + sig["sl_reason"] + ")\n\n"
-    msg = msg + "TP1:   " + fp(sig["tp1"]) + "\n"
-    msg = msg + "TP2:   " + fp(sig["tp2"]) + "\n"
-    msg = msg + "TP3:   " + fp(sig["tp3"]) + "\n"
-    msg = msg + "TP4:   " + fp(sig["tp4"]) + "\n\n"
-    msg = msg + "Hold: " + sig["hold"] + "\n"
-    msg = msg + "Score: " + str(sig["score"]) + "/100 - " + sig["conf"] + "\n"
-    msg = msg + "RSI: " + str(round(sig["rsi"])) + " | Stoch: " + str(round(sig["stoch"])) + "\n"
-    msg = msg + "Regime: " + sig["regime"] + "\n"
-    if sig.get("divergence"):
-        msg = msg + "Bullish Divergence detected\n"
-
-    if sig.get("alternate"):
-        msg = msg + "Alternate: " + sig["alternate"] + "\n"
-
+    icon  = "⚡" if is_sc else "📈"
+    tp_l  = ["+3%","+5%","+8%","+12%"] if is_sc else ["+5%","+10%","+15%","+20%"]
+    sl_l  = "-3%" if is_sc else "-5%"
+    msg  = icon + " <b>" + sig["type"] + " — " + sig["sym"] + "/USDT</b>\n\n"
+    msg += "💵 Entry:  " + fp(sig["current"] * 0.99) + " – " + fp(sig["current"] * 1.01) + "\n"
+    msg += "🛑 SL:     " + fp(sig["sl"]) + "  (" + sl_l + ")\n\n"
+    msg += "🎯 TP1:   " + fp(sig["tp1"]) + "  (" + tp_l[0] + ")\n"
+    msg += "🎯 TP2:   " + fp(sig["tp2"]) + "  (" + tp_l[1] + ")\n"
+    msg += "🎯 TP3:   " + fp(sig["tp3"]) + "  (" + tp_l[2] + ")\n"
+    msg += "🎯 TP4:   " + fp(sig["tp4"]) + "  (" + tp_l[3] + ")\n\n"
+    msg += "⏱ Hold: " + sig["hold"] + "\n"
+    msg += "⚡ Score: " + str(sig["score"]) + "/100 — " + sig["conf"]
     return msg
 
 def build_watch_msg(sym, sig_type, current, score, rsi, struct_label, reason, position_size=0, extra_info=None):
