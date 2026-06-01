@@ -1931,10 +1931,17 @@ def analyze(coin, signal_type="swing"):
     ath = global_ath if global_ath > 0 else max(prices)
     pct_ath = (current - ath) / ath * 100
 
-    regime = detect_volatility_regime(prices, highs, lows)
-    atr = regime.get("atr", calc_atr(highs, lows, prices))
-    pivots, win, min_move = detect_pivots_adaptive(prices, highs, lows, regime, signal_type)
-    phase = read_market_phase(prices, highs, lows, pivots, current, pct_ath)
+    try:
+        regime = detect_volatility_regime(prices, highs, lows)
+        atr = regime.get("atr", calc_atr(highs, lows, prices))
+        pivots, win, min_move = detect_pivots_adaptive(prices, highs, lows, regime, signal_type)
+        phase = read_market_phase(prices, highs, lows, pivots, current, pct_ath)
+        print("    [" + signal_type + "] " + sym + " phase=" + phase + " rsi=pending")
+    except Exception as e:
+        import traceback
+        print("    [" + signal_type + "] " + sym + " CRASH in phase detection: " + str(e))
+        print("    " + traceback.format_exc().split("\n")[-3])
+        return None
 
     if phase == "DOWNTREND":
         print("    [" + signal_type + "] " + sym + " BLOCKED: DOWNTREND phase")
