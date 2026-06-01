@@ -127,40 +127,84 @@ market_ctx     = None
 _ctx_history   = []
 _structure_memory = {}
 
-STATE_FILE = "/tmp/signalsym_state.json"
+# ================================================================
+# STATE PERSISTENCE via Telegram
+# Render wipes /tmp on every deploy. So we use Telegram itself
+# to store the sent_signals state. On startup, the bot reads its
+# own last state message and restores cooldowns from it.
+# This survives ALL restarts, deploys, and crashes.
+# ================================================================
+TG_STATE_MARKER = "SIGNALSYM_STATE_V1:"
 
 def save_state():
-    """Persist cooldowns to disk so Render restarts don't resend everything."""
+    """Save cooldowns to Telegram as a pinned message."""
+    if not TG_BASE:
+        return
     try:
         state = {
             "sent_signals": sent_signals,
-            "sent_watches": sent_watches,
             "saved_at": time.time()
         }
-        with open(STATE_FILE, "w") as f:
-            json.dump(state, f)
+        msg_text = TG_STATE_MARKER + json.dumps(state)
+        requests.post(TG_BASE + "/sendMessage",
+            json={"chat_id": CHAT_ID, "text": msg_text,
+                  "disable_notification": True},
+            timeout=10)
     except Exception as e:
         print("  [STATE] Save failed: " + str(e))
 
 def load_state():
-    """Load cooldowns from disk on startup."""
-    global sent_signals, sent_watches
+    """Read cooldowns from Telegram chat history on startup."""
+    global sent_signals
+    if not TG_BASE:
+        return
     try:
-        with open(STATE_FILE) as f:
-            state = json.load(f)
-        age = time.time() - state.get("saved_at", 0)
-        # Only restore if saved within last 24 hours
-        if age < 86400:
-            sent_signals = state.get("sent_signals", {})
-            sent_watches = state.get("sent_watches", {})
-            print("  [STATE] Restored: " + str(len(sent_signals)) + " signals, " +
-                  str(len(sent_watches)) + " watches (age=" + str(round(age/60)) + "min)")
+        # Fetch last 50 messages to find the most recent state
+        r = requests.get(TG_BASE + "/getUpdates",
+            params={"limit": 100, "offset": -100},
+            timeout=15)
+        if r.status_code != 200:
+            print("  [STATE] Could not read Telegram history")
+            return
+
+        updates = r.json().get("result", [])
+        # Also check sent messages via getChat
+        # Use a simpler approach: store in a known message we can retrieve
+        # Search updates for our state marker
+        latest_state = None
+        latest_time  = 0
+
+        for update in updates:
+            msg = update.get("message", {})
+            text = msg.get("text", "")
+            if text.startswith(TG_STATE_MARKER):
+                try:
+                    state = json.loads(text[len(TG_STATE_MARKER):])
+                    msg_time = msg.get("date", 0)
+                    if msg_time > latest_time:
+                        latest_time  = msg_time
+                        latest_state = state
+                except:
+                    pass
+
+        if latest_state:
+            age = time.time() - latest_state.get("saved_at", 0)
+            if age < 86400:  # Only use if less than 24hr old
+                loaded = latest_state.get("sent_signals", {})
+                # Only restore signals within their cooldown window
+                now = time.time()
+                for key, ts in loaded.items():
+                    cooldown = 28800 if "swing" in key else 14400
+                    if now - ts < cooldown:
+                        sent_signals[key] = ts
+                print("  [STATE] Restored " + str(len(sent_signals)) +
+                      " active cooldowns from Telegram (age=" + str(round(age/60)) + "min)")
+            else:
+                print("  [STATE] State too old — starting fresh")
         else:
-            print("  [STATE] State too old (" + str(round(age/3600)) + "hr) — starting fresh")
-    except FileNotFoundError:
-        print("  [STATE] No state file — starting fresh")
+            print("  [STATE] No previous state found — starting fresh")
     except Exception as e:
-        print("  [STATE] Load failed: " + str(e))
+        print("  [STATE] Load error: " + str(e))
 
 
 
@@ -2022,6 +2066,7 @@ def check_price_alerts():
 # WATCH MONITOR
 # ================================================================
 def monitor_watch_coins():
+    return  # Watch alerts disabled — signals only
     if not sent_watches: return
     now=time.time()
     for key, watch_time in list(sent_watches.items()):
@@ -2054,7 +2099,8 @@ def main():
 
     start_api_server()
     tg_ok = init_telegram()
-    load_state()  # Restore cooldowns from disk
+    if tg_ok:
+        load_state()  # Restore cooldowns from Telegram history
 
     total=len(HALAL_WATCHLIST)
     t1=[c["sym"] for c in HALAL_WATCHLIST if c["tier"]==1]
@@ -2070,8 +2116,8 @@ def main():
     if tg_ok:
         msg  = "[BOT V8 STARTED] SIGNALSYM\n"
         msg += "================================\n"
-        msg += "Signal: 75/100 min | Watch: 55/100 min\n"
-        msg += "V8.2 — 75+ signals only\n"
+        msg += "Signals only: 75/100 minimum\n"
+        msg += "V8.3 — signals only, no watch spam\n"
         msg += "60-69: Developing — Monitoring\n"
         msg += "70-79: Medium — Monitoring\n"
         msg += "80+: Strong Buy\n"
@@ -2118,28 +2164,11 @@ def main():
                     print("  " + sym + " swing: cooldown")
                     sw = None
                 else:
-                    # Also skip if watch was sent recently
-                    wk_pre=sym+"_watch_swing"
-                    if time.time()-sent_watches.get(wk_pre,0)<14400:
-                        sw=None  # skip - watch cooldown active
-                        print("  " + sym + " swing watch: cooldown")
-                    else:
-                        sw=analyze(coin,"swing")
+                    sw=analyze(coin,"swing")
                 if sw:
                     if sw.get("watch"):
-                        # Hard filter: never send watch below 55
-                        if sw.get("score", 0) < 55:
-                            print("W(skip-low)",end=" ")
-                        else:
-                            wk=sym+"_watch_swing"
-                            if time.time()-sent_watches.get(wk,0)<14400:  # 4hr watch cooldown
-                                print("W(cd)",end=" ")
-                            else:
-                                print("W"+str(sw["score"]),end=" ")
-                                pos=sw.get("position_size",0)
-                                send_msg(build_watch_msg(sym,"SWING",sw["current"],sw["score"],sw["rsi"],sw["struct_label"],sw["reason"],pos))
-                                sent_watches[wk]=time.time(); watches+=1
-                                save_state()
+                        # No watch messages — silence below 75
+                        print("  " + sym + " swing: developing score=" + str(sw.get("score",0)))
                     else:
                         if time.time()-sent_signals.get(swing_key,0)<28800:  # 8hr cooldown
                             print("S(cd)",end=" ")
@@ -2164,28 +2193,11 @@ def main():
                     print("  " + sym + " scalp: cooldown")
                     sc = None
                 else:
-                    # Also skip if watch was sent recently
-                    wk_pre_sc=sym+"_watch_scalp"
-                    if time.time()-sent_watches.get(wk_pre_sc,0)<7200:
-                        sc=None  # skip - watch cooldown active
-                        print("  " + sym + " scalp watch: cooldown")
-                    else:
-                        sc=analyze(coin,"scalp")
+                    sc=analyze(coin,"scalp")
                 if sc:
                     if sc.get("watch"):
-                        # Hard filter: never send watch below 55
-                        if sc.get("score", 0) < 55:
-                            print("WS(skip-low)")
-                        else:
-                            wk=sym+"_watch_scalp"
-                            if time.time()-sent_watches.get(wk,0)<7200:  # 2hr watch cooldown
-                                print("WS(cd)")
-                            else:
-                                print("WS"+str(sc["score"]))
-                                pos=sc.get("position_size",0)
-                                send_msg(build_watch_msg(sym,"SCALP",sc["current"],sc["score"],sc["rsi"],sc["struct_label"],sc["reason"],pos))
-                                sent_watches[wk]=time.time(); watches+=1
-                                save_state()
+                        # No watch messages — silence below 75
+                        print("  " + sym + " scalp: developing score=" + str(sc.get("score",0)))
                     else:
                         if time.time()-sent_signals.get(scalp_key,0)<14400:  # 4hr cooldown
                             print("SC(cd)")
