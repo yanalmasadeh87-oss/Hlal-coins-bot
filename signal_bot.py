@@ -30,32 +30,65 @@ COINS = [
 ]
 
 # ================================================================
-# STATE — persisted to disk, survives restarts
+# STATE — stored as pinned Telegram message
+# Bot pins its own state message and reads it back on restart.
+# Works on ANY platform, survives ALL restarts and deploys.
 # ================================================================
-STATE_PATH = "/opt/render/project/src/state.json"
-sent = {}   # {key: timestamp}  e.g. "BNB_swing": 1234567890
+sent = {}          # {key: timestamp}
+_pin_msg_id = None # ID of the pinned state message
+
+def _state_text():
+    return "SSYM:" + json.dumps({"s": sent, "t": time.time()})
 
 def save():
+    """Update or create the pinned state message."""
+    global _pin_msg_id
+    text = _state_text()
     try:
-        with open(STATE_PATH, "w") as f:
-            json.dump({"sent": sent, "at": time.time()}, f)
-    except:
-        pass
+        if _pin_msg_id:
+            # Edit existing message
+            r = requests.post(TG + "/editMessageText",
+                json={"chat_id": CHAT_ID, "message_id": _pin_msg_id,
+                      "text": text}, timeout=10)
+            if r.ok:
+                return
+        # Send new message and pin it
+        r = requests.post(TG + "/sendMessage",
+            json={"chat_id": CHAT_ID, "text": text,
+                  "disable_notification": True}, timeout=10)
+        if r.ok:
+            _pin_msg_id = r.json()["result"]["message_id"]
+            requests.post(TG + "/pinChatMessage",
+                json={"chat_id": CHAT_ID, "message_id": _pin_msg_id,
+                      "disable_notification": True}, timeout=10)
+    except Exception as e:
+        print("  [STATE] Save error:", e)
 
 def load():
-    global sent
+    """Read state from pinned message on startup."""
+    global sent, _pin_msg_id
     try:
-        with open(STATE_PATH) as f:
-            d = json.load(f)
-        if time.time() - d.get("at", 0) < 86400:
-            now = time.time()
-            for k, v in d.get("sent", {}).items():
-                cd = SWING_COOLDOWN if "swing" in k else SCALP_COOLDOWN
-                if now - v < cd:
-                    sent[k] = v
-            print(f"  [STATE] Restored {len(sent)} cooldowns")
-    except:
-        print("  [STATE] Fresh start")
+        r = requests.get(TG + "/getChat",
+            params={"chat_id": CHAT_ID}, timeout=10)
+        if not r.ok:
+            print("  [STATE] getChat failed"); return
+        pin = r.json().get("result", {}).get("pinned_message", {})
+        text = pin.get("text", "")
+        if not text.startswith("SSYM:"):
+            print("  [STATE] No state pin found — fresh start"); return
+        d = json.loads(text[5:])
+        age = time.time() - d.get("t", 0)
+        if age > 86400:
+            print("  [STATE] State too old — fresh start"); return
+        _pin_msg_id = pin.get("message_id")
+        now = time.time()
+        for k, v in d.get("s", {}).items():
+            cd = SWING_COOLDOWN if "swing" in k else SCALP_COOLDOWN
+            if now - v < cd:
+                sent[k] = v
+        print(f"  [STATE] Restored {len(sent)} cooldowns (age={round(age/60)}min)")
+    except Exception as e:
+        print("  [STATE] Load error:", e)
 
 def on_cooldown(key):
     cd = SWING_COOLDOWN if "swing" in key else SCALP_COOLDOWN
