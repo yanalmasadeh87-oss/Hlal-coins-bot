@@ -127,6 +127,41 @@ market_ctx     = None
 _ctx_history   = []
 _structure_memory = {}
 
+STATE_FILE = "/tmp/signalsym_state.json"
+
+def save_state():
+    """Persist cooldowns to disk so Render restarts don't resend everything."""
+    try:
+        state = {
+            "sent_signals": sent_signals,
+            "sent_watches": sent_watches,
+            "saved_at": time.time()
+        }
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f)
+    except Exception as e:
+        print("  [STATE] Save failed: " + str(e))
+
+def load_state():
+    """Load cooldowns from disk on startup."""
+    global sent_signals, sent_watches
+    try:
+        with open(STATE_FILE) as f:
+            state = json.load(f)
+        age = time.time() - state.get("saved_at", 0)
+        # Only restore if saved within last 24 hours
+        if age < 86400:
+            sent_signals = state.get("sent_signals", {})
+            sent_watches = state.get("sent_watches", {})
+            print("  [STATE] Restored: " + str(len(sent_signals)) + " signals, " +
+                  str(len(sent_watches)) + " watches (age=" + str(round(age/60)) + "min)")
+        else:
+            print("  [STATE] State too old (" + str(round(age/3600)) + "hr) — starting fresh")
+    except FileNotFoundError:
+        print("  [STATE] No state file — starting fresh")
+    except Exception as e:
+        print("  [STATE] Load failed: " + str(e))
+
 
 
 # ================================================================
@@ -1659,11 +1694,11 @@ def analyze(coin, signal_type="swing"):
     if signal_type=="swing":
         prices,highs,lows,vols,opens = fetch_klines_full(sym,"1d",730)
         sl_pct=0.05; tp1_pct=0.05; tp2_pct=0.10; tp3_pct=0.15; tp4_pct=0.20
-        min_score=60; hold="Days to weeks"
+        min_score=75; hold="Days to weeks"
     else:
         prices,highs,lows,vols,opens = fetch_klines_full(sym,"4h",540)
         sl_pct=0.03; tp1_pct=0.03; tp2_pct=0.05; tp3_pct=0.08; tp4_pct=0.12
-        min_score=60; hold="1-3 days"
+        min_score=75; hold="1-3 days"
 
     if len(prices) < 50:
         print("  [" + signal_type + "] " + sym + " BLOCKED: only " + str(len(prices)) + " candles")
@@ -1827,10 +1862,18 @@ def analyze(coin, signal_type="swing"):
     ctx_adj     = context_adjustment(sym, market_ctx)
     final_score = max(0, min(100, conf_score + ctx_adj + degree_bonus))
 
-    print("    [" + signal_type + "] " + sym + " score=" + str(final_score) + " struct=" + struct_type + " phase=" + phase)
+    print("    [" + signal_type + "] " + sym + " score=" + str(final_score) +
+          " (raw=" + str(conf_score) + ") struct=" + struct_type + " phase=" + phase)
 
+    # Gate 1: Raw structure score must be at least 45 before any bonuses
+    # Prevents degree_bonus from inflating a weak structure to 60+
+    if conf_score < 55:
+        print("    [" + signal_type + "] " + sym + " BLOCKED: raw score <55, final score=" + str(conf_score))
+        return None
+
+    # Gate 2: Final score (with bonuses) must be at least 25 to even watch
     if final_score < 25:
-        print("    [" + signal_type + "] " + sym + " BLOCKED: score too low=" + str(final_score))
+        print("    [" + signal_type + "] " + sym + " BLOCKED: final score too low=" + str(final_score))
         return None
 
     if rsi_val > 75:
@@ -1845,15 +1888,15 @@ def analyze(coin, signal_type="swing"):
     is_locked = chart.get("locked",False)
     position_size = calculate_position_size(final_score, regime, trend["label"], is_locked)
 
-    if final_score>=85:    conf="HIGH — STRONG BUY"
+    if final_score>=90:    conf="HIGH — STRONG BUY"
+    elif final_score>=85:  conf="HIGH — STRONG BUY"
     elif final_score>=80:  conf="MEDIUM-HIGH — STRONG BUY"
-    elif final_score>=70:  conf="MEDIUM — MONITORING"
-    elif final_score>=60:  conf="DEVELOPING — MONITORING"
-    else:                  conf="LOW"
+    elif final_score>=75:  conf="MEDIUM — BUY"
+    else:                  conf="WATCH"
 
     if final_score < min_score:
         # Only send watch if score >= 40, otherwise skip entirely
-        if final_score < 40:
+        if final_score < 55:
             print("    [" + signal_type + "] " + sym + " SKIPPED: watch score too low=" + str(final_score))
             return None
         return {
@@ -2011,6 +2054,7 @@ def main():
 
     start_api_server()
     tg_ok = init_telegram()
+    load_state()  # Restore cooldowns from disk
 
     total=len(HALAL_WATCHLIST)
     t1=[c["sym"] for c in HALAL_WATCHLIST if c["tier"]==1]
@@ -2026,8 +2070,8 @@ def main():
     if tg_ok:
         msg  = "[BOT V8 STARTED] SIGNALSYM\n"
         msg += "================================\n"
-        msg += "Signal: 60/100 min | Watch: 40/100 min\n"
-        msg += "V8.1 — Trending/Impulse fix + SL fix + HTF fix\n"
+        msg += "Signal: 75/100 min | Watch: 55/100 min\n"
+        msg += "V8.2 — 75+ signals only\n"
         msg += "60-69: Developing — Monitoring\n"
         msg += "70-79: Medium — Monitoring\n"
         msg += "80+: Strong Buy\n"
@@ -2073,7 +2117,7 @@ def main():
                 if sw:
                     if sw.get("watch"):
                         wk=sym+"_watch_swing"
-                        if time.time()-sent_watches.get(wk,0)<7200:
+                        if time.time()-sent_watches.get(wk,0)<14400:  # 4hr watch cooldown
                             print("W(cd)",end=" ")
                         else:
                             print("W"+str(sw["score"]),end=" ")
@@ -2081,12 +2125,13 @@ def main():
                             send_msg(build_watch_msg(sym,"SWING",sw["current"],sw["score"],sw["rsi"],sw["struct_label"],sw["reason"],pos))
                             sent_watches[wk]=time.time(); watches+=1
                     else:
-                        if time.time()-sent_signals.get(swing_key,0)<14400:
+                        if time.time()-sent_signals.get(swing_key,0)<28800:  # 8hr cooldown
                             print("S(cd)",end=" ")
                         else:
                             print(str(sw["score"])+"/100["+sw.get("struct_type","")+"]",end=" ")
                             send_msg(build_msg(sw))
                             sent_signals[swing_key]=time.time(); signals+=1
+                            save_state()
                             active_trades[swing_key]={"sym":sym,"type":"SWING","entry":sw["current"],
                                 "sl":sw["sl"],"tp1":sw["tp1"],"tp2":sw["tp2"],
                                 "tp3":sw["tp3"],"tp4":sw["tp4"],
@@ -2102,7 +2147,7 @@ def main():
                 if sc:
                     if sc.get("watch"):
                         wk=sym+"_watch_scalp"
-                        if time.time()-sent_watches.get(wk,0)<3600:
+                        if time.time()-sent_watches.get(wk,0)<7200:  # 2hr watch cooldown
                             print("WS(cd)")
                         else:
                             print("WS"+str(sc["score"]))
@@ -2110,12 +2155,13 @@ def main():
                             send_msg(build_watch_msg(sym,"SCALP",sc["current"],sc["score"],sc["rsi"],sc["struct_label"],sc["reason"],pos))
                             sent_watches[wk]=time.time(); watches+=1
                     else:
-                        if time.time()-sent_signals.get(scalp_key,0)<7200:
+                        if time.time()-sent_signals.get(scalp_key,0)<14400:  # 4hr cooldown
                             print("SC(cd)")
                         else:
                             print(str(sc["score"])+"/100["+sc.get("struct_type","")+"]")
                             send_msg(build_msg(sc))
                             sent_signals[scalp_key]=time.time(); signals+=1
+                            save_state()
                             active_trades[scalp_key]={"sym":sym,"type":"SCALP","entry":sc["current"],
                                 "sl":sc["sl"],"tp1":sc["tp1"],"tp2":sc["tp2"],
                                 "tp3":sc["tp3"],"tp4":sc["tp4"],
