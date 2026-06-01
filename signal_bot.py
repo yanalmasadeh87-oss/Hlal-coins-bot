@@ -380,8 +380,7 @@ def score(struct, c, h, l, trend_score):
 # ================================================================
 def risk(struct, c, h, l, sl_pct, tp_pcts):
     cur=c[-1]
-    sl  = struct.get("sl", cur*(1-sl_pct))
-    tp1 = struct.get("tp1", cur*(1+tp_pcts[0]))
+    max_sl = sl_pct  # 0.05 swing, 0.03 scalp
 
     if struct["type"]=="EW_W2":
         w1r=struct["w1r"]; tp1=struct["w1h"]
@@ -393,11 +392,15 @@ def risk(struct, c, h, l, sl_pct, tp_pcts):
         wa=struct["wa"]; tp1=struct["tp1"]
         tp2=tp1+wa*0.618; tp3=tp1+wa; tp4=tp1+wa*1.618
     else:
-        rng=cur-sl
-        tp2=cur+rng*2.5; tp3=cur+rng*4; tp4=cur+rng*6
+        tp1=cur*(1+tp_pcts[0]); tp2=cur*(1+tp_pcts[1])
+        tp3=cur*(1+tp_pcts[2]); tp4=cur*(1+tp_pcts[3])
 
-    # Sanity: SL below entry, TPs ascending above entry
-    if sl>=cur: sl=cur*(1-sl_pct)
+    # SL: use structure SL but HARD CAP at max_sl below entry
+    raw_sl = struct.get("sl", cur*(1-max_sl))
+    sl = max(raw_sl, cur*(1-max_sl))  # never more than max_sl% below entry
+
+    # Final sanity
+    if sl>=cur: sl=cur*(1-max_sl)
     if tp1<=cur: tp1=cur*(1+tp_pcts[0])
     if tp2<=tp1: tp2=tp1*(1+tp_pcts[1])
     if tp3<=tp2: tp3=tp2*(1+tp_pcts[2])
@@ -454,7 +457,11 @@ def analyze(sym, mode):
         if fg<=20: return None  # extreme fear
         if sc<80 and ctx["btc_d"]>58: return None  # BTC dominance too high for alts
 
-    sl_pct=0.05; tp_pcts=[0.05,0.05,0.05,0.05]
+    # Mode-specific risk parameters
+    if mode=="scalp":
+        sl_pct=0.03; tp_pcts=[0.03,0.05,0.08,0.12]
+    else:
+        sl_pct=0.05; tp_pcts=[0.05,0.10,0.15,0.20]
     sl,tp1,tp2,tp3,tp4=risk(st,c,h,l,sl_pct,tp_pcts)
 
     rr=abs((tp2-cur)/(cur-sl)) if cur!=sl else 0
