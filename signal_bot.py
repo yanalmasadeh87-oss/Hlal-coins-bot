@@ -1970,9 +1970,9 @@ def build_watch_msg(sym, sig_type, current, score, rsi, struct_label, reason, po
     msg  = "[WATCH] " + sym + "/USDT (" + sig_type + ")\n\n"
     msg += "Pattern: " + struct_label + "\n"
     msg += "Price: " + fp(current) + " | RSI: " + str(round(rsi)) + "\n"
-    msg += "Score: " + str(score) + "/100 | Suggested: " + str(position_size) + "%\n"
+    msg += "Score: " + str(score) + "/100\n"
     msg += "Status: " + reason + "\n\n"
-    msg += "Not a signal yet - monitoring"
+    msg += "Monitoring — not a signal yet"
     return msg
 
 # ================================================================
@@ -2116,14 +2116,19 @@ def main():
                 sw=analyze(coin,"swing")
                 if sw:
                     if sw.get("watch"):
-                        wk=sym+"_watch_swing"
-                        if time.time()-sent_watches.get(wk,0)<14400:  # 4hr watch cooldown
-                            print("W(cd)",end=" ")
+                        # Hard filter: never send watch below 55
+                        if sw.get("score", 0) < 55:
+                            print("W(skip-low)",end=" ")
                         else:
-                            print("W"+str(sw["score"]),end=" ")
-                            pos=sw.get("position_size",0)
-                            send_msg(build_watch_msg(sym,"SWING",sw["current"],sw["score"],sw["rsi"],sw["struct_label"],sw["reason"],pos))
-                            sent_watches[wk]=time.time(); watches+=1
+                            wk=sym+"_watch_swing"
+                            if time.time()-sent_watches.get(wk,0)<14400:  # 4hr watch cooldown
+                                print("W(cd)",end=" ")
+                            else:
+                                print("W"+str(sw["score"]),end=" ")
+                                pos=sw.get("position_size",0)
+                                send_msg(build_watch_msg(sym,"SWING",sw["current"],sw["score"],sw["rsi"],sw["struct_label"],sw["reason"],pos))
+                                sent_watches[wk]=time.time(); watches+=1
+                                save_state()
                     else:
                         if time.time()-sent_signals.get(swing_key,0)<28800:  # 8hr cooldown
                             print("S(cd)",end=" ")
@@ -2146,14 +2151,19 @@ def main():
                 sc=analyze(coin,"scalp")
                 if sc:
                     if sc.get("watch"):
-                        wk=sym+"_watch_scalp"
-                        if time.time()-sent_watches.get(wk,0)<7200:  # 2hr watch cooldown
-                            print("WS(cd)")
+                        # Hard filter: never send watch below 55
+                        if sc.get("score", 0) < 55:
+                            print("WS(skip-low)")
                         else:
-                            print("WS"+str(sc["score"]))
-                            pos=sc.get("position_size",0)
-                            send_msg(build_watch_msg(sym,"SCALP",sc["current"],sc["score"],sc["rsi"],sc["struct_label"],sc["reason"],pos))
-                            sent_watches[wk]=time.time(); watches+=1
+                            wk=sym+"_watch_scalp"
+                            if time.time()-sent_watches.get(wk,0)<7200:  # 2hr watch cooldown
+                                print("WS(cd)")
+                            else:
+                                print("WS"+str(sc["score"]))
+                                pos=sc.get("position_size",0)
+                                send_msg(build_watch_msg(sym,"SCALP",sc["current"],sc["score"],sc["rsi"],sc["struct_label"],sc["reason"],pos))
+                                sent_watches[wk]=time.time(); watches+=1
+                                save_state()
                     else:
                         if time.time()-sent_signals.get(scalp_key,0)<14400:  # 4hr cooldown
                             print("SC(cd)")
