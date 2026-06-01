@@ -227,34 +227,29 @@ def fetch_market_context():
     """
     global _ctx_history
     try:
-        # Use Binance 24hr ticker — quoteVolume as market cap proxy
-        # quoteVolume = total USD traded in 24h — proportional to market cap
-        # This gives accurate RELATIVE dominance even if not exact market cap
-        r = requests.get(BN_BASE + "/ticker/24hr", timeout=15)
-        tickers = r.json()
-        if not isinstance(tickers, list):
-            raise Exception("Binance 24hr returned unexpected format")
-
-        # Sum quoteVolume for USDT pairs only
-        usdt_vols = {}
-        for t in tickers:
-            sym = t.get("symbol", "")
-            if sym.endswith("USDT") and float(t.get("quoteVolume", 0)) > 0:
-                coin = sym[:-4]  # Remove USDT
-                usdt_vols[coin] = float(t["quoteVolume"])
-
-        btc_vol  = usdt_vols.get("BTC", 0)
-        eth_vol  = usdt_vols.get("ETH", 0)
-        total    = sum(usdt_vols.values())
-        total3   = total - btc_vol - eth_vol
-
-        # BTC.D from volume dominance — accurate proxy for market cap dominance
-        btc_dom = (btc_vol / total * 100) if total > 0 else 50
+        # CoinGecko global — accurate BTC.D, TOTAL, TOTAL3
+        # Free API, works from Render US servers
+        btc_dom = 50; total = 0; total3 = 0  # defaults
+        try:
+            cg = requests.get("https://api.coingecko.com/api/v3/global", timeout=10)
+            if cg.status_code == 200:
+                gdata = cg.json().get("data", {})
+                btc_dom = float(gdata.get("market_cap_percentage", {}).get("btc", 50))
+                total   = float(gdata.get("total_market_cap", {}).get("usd", 0))
+                # TOTAL3 = total minus BTC and ETH
+                eth_pct = float(gdata.get("market_cap_percentage", {}).get("eth", 15))
+                btc_mcap_est = total * btc_dom / 100
+                eth_mcap_est = total * eth_pct / 100
+                total3 = total - btc_mcap_est - eth_mcap_est
+                print("  CoinGecko BTC.D=" + str(round(btc_dom,1)) + "%", flush=True)
+            else:
+                print("  CoinGecko status=" + str(cg.status_code) + " — using defaults", flush=True)
+        except Exception as eg:
+            print("  CoinGecko failed: " + str(eg)[:50] + " — using defaults", flush=True)
 
         # Sanity check
         if btc_dom < 20 or btc_dom > 80:
             btc_dom = 50
-            print("  BTC.D sanity check failed — using 50%")
 
         # Fear & Greed from Alternative.me — with fallback
         fg_now = 50; fg_7d = 50
@@ -1343,7 +1338,7 @@ def recognize_chart_structure(prices, highs, lows, opens, pivots, current, pct_a
             w1 = w1h - w0
             if w1 <= 0 or w2l <= w0: continue
             w2_ret = (w1h - w2l) / w1
-            if abs(current - w2l) / w2l > 0.08: continue
+            if abs(current - w2l) / w2l > 0.15: continue  # 15% proximity
             _, fib_valid, fib_label = calc_fib_retrace(p[:3])
             score = 60 + (10 if 0.5 <= w2_ret <= 0.786 else 5 if w2_ret >= 0.382 else 0)
             cand = {
@@ -1367,7 +1362,7 @@ def recognize_chart_structure(prices, highs, lows, opens, pivots, current, pct_a
             w1 = w1h - w0; w3 = w3h - w2l
             if w1 <= 0 or w3 <= 0 or w2l <= w0 or w3 < w1 or w4l <= w1h: continue
             w2_ret = (w1h - w2l) / w1; w4_ret = (w3h - w4l) / w3
-            if abs(current - w4l) / w4l > 0.08: continue
+            if abs(current - w4l) / w4l > 0.15: continue  # 15% proximity
             _, fib_valid, fib_label = calc_fib_retrace(p5[:3])
             bb_lo = w3h - w3 * 0.786; bb_hi = w3h - w3 * 0.618
             in_bb = bb_lo <= current <= bb_hi
@@ -1485,6 +1480,7 @@ def recognize_chart_structure(prices, highs, lows, opens, pivots, current, pct_a
 
     # NO FALLBACK
     if not candidates:
+        print("  [debug] " + sym + " " + sig_type + " no candidates found — pivots=" + str(len(pivots)) + " phase=" + phase, flush=True)
         return {"type": "UNKNOWN", "label": "No valid structure found", "confidence_score": 0,
                 "sit_applicable": [], "sit_na": [], "phase": phase}
 
