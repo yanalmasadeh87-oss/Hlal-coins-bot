@@ -228,24 +228,38 @@ def fetch_market_context():
     global _ctx_history
     try:
         # CoinGecko global — accurate BTC.D, TOTAL, TOTAL3
-        # Free API, works from Render US servers
-        btc_dom = 50; total = 0; total3 = 0  # defaults
-        try:
-            cg = requests.get("https://api.coingecko.com/api/v3/global", timeout=10)
-            if cg.status_code == 200:
-                gdata = cg.json().get("data", {})
-                btc_dom = float(gdata.get("market_cap_percentage", {}).get("btc", 50))
-                total   = float(gdata.get("total_market_cap", {}).get("usd", 0))
-                # TOTAL3 = total minus BTC and ETH
-                eth_pct = float(gdata.get("market_cap_percentage", {}).get("eth", 15))
-                btc_mcap_est = total * btc_dom / 100
-                eth_mcap_est = total * eth_pct / 100
-                total3 = total - btc_mcap_est - eth_mcap_est
-                print("  CoinGecko BTC.D=" + str(round(btc_dom,1)) + "%", flush=True)
-            else:
-                print("  CoinGecko status=" + str(cg.status_code) + " — using defaults", flush=True)
-        except Exception as eg:
-            print("  CoinGecko failed: " + str(eg)[:50] + " — using defaults", flush=True)
+        # Cached: only fetched every 5 scans to avoid rate limiting
+        global _cached_btc_dom, _cached_total, _cached_total3, _cg_last_fetch
+        if "_cached_btc_dom" not in globals():
+            _cached_btc_dom = 50; _cached_total = 0
+            _cached_total3 = 0; _cg_last_fetch = 0
+
+        btc_dom = _cached_btc_dom
+        total   = _cached_total
+        total3  = _cached_total3
+
+        # Refresh 3 times per day (every 8 hours)
+        if time.time() - _cg_last_fetch > 28800:
+            try:
+                cg = requests.get("https://api.coingecko.com/api/v3/global",
+                    timeout=10, headers={"User-Agent": "SIGNALSYM/7.0"})
+                if cg.status_code == 200:
+                    gdata = cg.json().get("data", {})
+                    btc_dom = float(gdata.get("market_cap_percentage", {}).get("btc", 50))
+                    total   = float(gdata.get("total_market_cap", {}).get("usd", 0))
+                    eth_pct = float(gdata.get("market_cap_percentage", {}).get("eth", 15))
+                    btc_mcap_est = total * btc_dom / 100
+                    eth_mcap_est = total * eth_pct / 100
+                    total3 = total - btc_mcap_est - eth_mcap_est
+                    _cached_btc_dom = btc_dom; _cached_total = total
+                    _cached_total3  = total3;  _cg_last_fetch = time.time()
+                    print("  CoinGecko updated BTC.D=" + str(round(btc_dom,1)) + "%", flush=True)
+                elif cg.status_code == 429:
+                    print("  CoinGecko rate limited — using cached BTC.D=" + str(round(btc_dom,1)) + "%", flush=True)
+                else:
+                    print("  CoinGecko status=" + str(cg.status_code) + " — using cached", flush=True)
+            except Exception as eg:
+                print("  CoinGecko failed: " + str(eg)[:50] + " — using cached", flush=True)
 
         # Sanity check
         if btc_dom < 20 or btc_dom > 80:
@@ -274,11 +288,11 @@ def fetch_market_context():
             "fg_now": fg_now, "fg_zone": fg_zone, "fg_trend": fg_trend
         }
         _ctx_history.append({"btc_dom": btc_dom, "total": total, "total3": total3, "ts": time.time()})
-        if len(_ctx_history) > 48: _ctx_history.pop(0)
+        if len(_ctx_history) > 96: _ctx_history.pop(0)
 
         def get_trend(key):
-            # 48 readings = 12 hours. 3% threshold filters out normal noise.
-            if len(_ctx_history) < 48: return "NEUTRAL"
+            # 96 readings = 24 hours. 3% threshold filters out normal noise.
+            if len(_ctx_history) < 96: return "NEUTRAL"
             old = _ctx_history[0][key]; new = _ctx_history[-1][key]
             if old == 0: return "NEUTRAL"
             chg = (new - old) / old * 100
@@ -334,7 +348,7 @@ def hard_market_filter(sym, ctx):
     history_len   = ctx.get("history_len", 0)
 
     # Only apply trend filters after enough history (at least 8 readings = 2 hours)
-    enough_history = history_len >= 48  # 48 readings = 12 hours of real trend data
+    enough_history = history_len >= 96  # 96 readings = 24 hours of real trend data
 
     # Rule 1: Extreme Fear — hard block everything
     if fg <= 20 and fg_zone == "EXTREME_FEAR":
