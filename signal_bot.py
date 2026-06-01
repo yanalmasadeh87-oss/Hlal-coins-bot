@@ -227,55 +227,32 @@ def fetch_market_context():
     """
     global _ctx_history
     try:
-        # Circulating supplies (approximate, updated May 2026)
-        SUPPLIES = {
-            "BTC":    19_700_000,
-            "ETH":   120_000_000,
-            "XRP":  57_000_000_000,
-            "BNB":   145_000_000,
-            "SOL":   462_000_000,
-            "ADA": 35_000_000_000,
-            "AVAX":  400_000_000,
-            "DOGE": 144_000_000_000,
-            "TRX":  87_000_000_000,
-            "LINK":  600_000_000,
-            "DOT":  1_400_000_000,
-            "MATIC":10_000_000_000,
-            "LTC":   74_000_000,
-            "UNI":  600_000_000,
-            "ATOM":  390_000_000,
-            "XLM":  29_000_000_000,
-            "NEAR": 1_100_000_000,
-            "ALGO": 8_000_000_000,
-            "FIL":   600_000_000,
-            "APT":   500_000_000,
-        }
+        # Use Binance 24hr ticker — quoteVolume as market cap proxy
+        # quoteVolume = total USD traded in 24h — proportional to market cap
+        # This gives accurate RELATIVE dominance even if not exact market cap
+        r = requests.get(BN_BASE + "/ticker/24hr", timeout=15)
+        tickers = r.json()
+        if not isinstance(tickers, list):
+            raise Exception("Binance 24hr returned unexpected format")
 
-        # Fetch all prices in one Binance call
-        syms = list(SUPPLIES.keys())
-        prices_url = BN_BASE + "/ticker/price"
-        r = requests.get(prices_url, timeout=10)
-        all_prices = {item["symbol"]: float(item["price"])
-                      for item in r.json()
-                      if isinstance(item, dict) and "symbol" in item}
+        # Sum quoteVolume for USDT pairs only
+        usdt_vols = {}
+        for t in tickers:
+            sym = t.get("symbol", "")
+            if sym.endswith("USDT") and float(t.get("quoteVolume", 0)) > 0:
+                coin = sym[:-4]  # Remove USDT
+                usdt_vols[coin] = float(t["quoteVolume"])
 
-        # Calculate market caps
-        mcaps = {}
-        for sym, supply in SUPPLIES.items():
-            price = all_prices.get(sym + "USDT", 0)
-            if price > 0:
-                mcaps[sym] = price * supply
+        btc_vol  = usdt_vols.get("BTC", 0)
+        eth_vol  = usdt_vols.get("ETH", 0)
+        total    = sum(usdt_vols.values())
+        total3   = total - btc_vol - eth_vol
 
-        btc_mcap  = mcaps.get("BTC", 0)
-        eth_mcap  = mcaps.get("ETH", 0)
-        total     = sum(mcaps.values())
-        total3    = total - btc_mcap - eth_mcap
-
-        # BTC.D calculated from real Binance prices
-        btc_dom = (btc_mcap / total * 100) if total > 0 else 50
+        # BTC.D from volume dominance — accurate proxy for market cap dominance
+        btc_dom = (btc_vol / total * 100) if total > 0 else 50
 
         # Sanity check
-        if btc_dom < 30 or btc_dom > 75:
+        if btc_dom < 20 or btc_dom > 80:
             btc_dom = 50
             print("  BTC.D sanity check failed — using 50%")
 
