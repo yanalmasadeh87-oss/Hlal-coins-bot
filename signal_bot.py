@@ -34,7 +34,8 @@ COINS = [
 # Bot pins its own state message and reads it back on restart.
 # Works on ANY platform, survives ALL restarts and deploys.
 # ================================================================
-sent = {}          # {key: timestamp}
+sent = {}          # {key: timestamp} — persists via pinned message
+_session_sent = {}  # {key: timestamp} — in-memory only, catches within-scan dupes
 _pin_msg_id = None # ID of the pinned state message
 
 def _state_text():
@@ -92,10 +93,15 @@ def load():
 
 def on_cooldown(key):
     cd = SWING_COOLDOWN if "swing" in key else SCALP_COOLDOWN
-    return time.time() - sent.get(key, 0) < cd
+    # Check both persistent state AND in-memory session state
+    in_persistent = time.time() - sent.get(key, 0) < cd
+    in_session    = time.time() - _session_sent.get(key, 0) < cd
+    return in_persistent or in_session
 
 def mark_sent(key):
-    sent[key] = time.time()
+    t = time.time()
+    sent[key] = t
+    _session_sent[key] = t  # also track in session — survives any state failure
     save()
 
 # ================================================================
@@ -148,27 +154,39 @@ _ctx_time  = 0
 
 def market_ctx():
     global _ctx_cache, _ctx_time
-    if time.time() - _ctx_time < 900 and _ctx_cache:   # cache 15min
+    # Print cached values every scan so they always show in logs
+    if time.time() - _ctx_time < 900 and _ctx_cache:
+        c = _ctx_cache
+        print(f"  CTX: BTC.D={c['btc_d']:.1f}% FG={c['fg']} TOTAL=${c['total']/1e12:.2f}T [cached]")
         return _ctx_cache
-    try:
-        r = requests.get("https://api.coingecko.com/api/v3/global",
-            headers={"x-cg-demo-api-key": CG_KEY}, timeout=15)
-        if r.status_code != 200: return _ctx_cache
-        d = r.json()["data"]
-        btc_d = float(d["market_cap_percentage"]["btc"])
-        total = float(d["total_market_cap"]["usd"])
-        fg = 50
+    # Fetch fresh from CoinGecko
+    for attempt in range(3):
         try:
-            fg = int(requests.get("https://api.alternative.me/fng/?limit=1",
-                timeout=8).json()["data"][0]["value"])
-        except: pass
-        _ctx_cache = {"btc_d": btc_d, "total": total, "fg": fg}
-        _ctx_time  = time.time()
-        print(f"  CTX: BTC.D={btc_d:.1f}% FG={fg} TOTAL=${total/1e12:.2f}T")
-        return _ctx_cache
-    except Exception as e:
-        print("  CTX error:", e)
-        return _ctx_cache
+            r = requests.get("https://api.coingecko.com/api/v3/global",
+                headers={"x-cg-demo-api-key": CG_KEY}, timeout=15)
+            if r.status_code == 429:
+                print(f"  CTX: CoinGecko rate limit — wait 20s")
+                time.sleep(20); continue
+            if r.status_code != 200:
+                print(f"  CTX: CoinGecko status {r.status_code}")
+                break
+            d = r.json()["data"]
+            btc_d = float(d["market_cap_percentage"]["btc"])
+            total = float(d["total_market_cap"]["usd"])
+            fg = 50
+            try:
+                fg = int(requests.get("https://api.alternative.me/fng/?limit=1",
+                    timeout=8).json()["data"][0]["value"])
+            except: pass
+            _ctx_cache = {"btc_d": btc_d, "total": total, "fg": fg}
+            _ctx_time  = time.time()
+            print(f"  CTX: BTC.D={btc_d:.1f}% FG={fg} TOTAL=${total/1e12:.2f}T [LIVE]")
+            return _ctx_cache
+        except Exception as e:
+            print(f"  CTX error attempt {attempt+1}: {e}")
+    if _ctx_cache:
+        print(f"  CTX: using last known data BTC.D={_ctx_cache['btc_d']:.1f}%")
+    return _ctx_cache
 
 # ================================================================
 # INDICATORS
@@ -538,8 +556,20 @@ def main():
     load()
     api()
 
-    tg(f"[SIGNALSYM V9] Started\n75+ signals only | {len(COINS)} coins\nBinance + CoinGecko")
-    print(f"SIGNALSYM V9 | {len(COINS)} coins | min score {MIN_SIGNAL_SCORE}")
+    # Log startup context immediately
+    ctx = market_ctx()
+    if ctx:
+        print(f"  Startup CTX: BTC.D={ctx['btc_d']:.1f}% FG={ctx['fg']} TOTAL=${ctx['total']/1e12:.2f}T")
+
+    tg(f"[SIGNALSYM V9] Started\n75+ signals only | {len(COINS)} coins\nRestored {len(sent)} cooldowns")
+    print(f"SIGNALSYM V9 | {len(COINS)} coins | min score {MIN_SIGNAL_SCORE} | {len(sent)} cooldowns active")
+
+    # Startup delay — prevents duplicate sends when Render restarts
+    # during deploy. Wait 10s, then recheck state before first scan.
+    print("  Waiting 10s before first scan...")
+    time.sleep(10)
+    load()  # reload state after delay — catches any concurrent instance
+    print(f"  Active cooldowns after reload: {len(sent)}")
 
     scan=0
     while True:
@@ -558,21 +588,22 @@ def main():
             for mode in ["swing","scalp"]:
                 key=sym+"_"+mode
                 if on_cooldown(key):
-                    continue   # silent skip — no log spam
+                    continue   # silent skip
                 try:
                     r=analyze(sym,mode)
                     if not r:
                         continue
-                    # One final cooldown check before sending
+                    # Final cooldown check — catches concurrent sends
                     if on_cooldown(key):
+                        print(f"  {sym} {mode}: cooldown hit after analyze — skip")
                         continue
                     print(f"  {sym} {mode.upper()} {r['score']}/100 [{r['struct']}] SENDING")
                     tg(msg(r))
-                    mark_sent(key)
+                    mark_sent(key)  # immediately updates both sent + _session_sent + saves state
                     active[key]={"sym":sym,"entry":r["cur"],"sl":r["sl"],
                                  "tp1":r["tp1"],"tp2":r["tp2"],"tp3":r["tp3"],"tp4":r["tp4"]}
                     sigs+=1
-                    time.sleep(2)
+                    time.sleep(3)  # 3s gap between signals
                 except Exception as e:
                     print(f"  {sym} {mode} error: {e}")
             time.sleep(0.5)
