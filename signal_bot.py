@@ -561,13 +561,20 @@ def main():
         print(f"  CTX: BTC.D={ctx['btc_d']:.1f}% FG={ctx['fg']} TOTAL=${ctx['total']/1e12:.2f}T")
 
     print(f"SIGNALSYM V9 | {len(COINS)} coins | min score {MIN_SIGNAL_SCORE} | {len(sent)} cooldowns active")
-    tg(f"[SIGNALSYM V9] Started\n75+ signals only | {len(COINS)} coins\n{len(sent)} cooldowns restored")
+    print(f"  Bot ready — {len(sent)} cooldowns active")
 
-    # Brief delay then reload — prevents duplicate sends on Render restarts
+    # Brief delay then reload state — stagger from any concurrent restart
     time.sleep(10)
     load()
     print(f"  Cooldowns after reload: {len(sent)}")
 
+    # Run scan loop in background thread — keeps HTTP server alive
+    threading.Thread(target=scan_loop, daemon=True).start()
+    # Keep main thread alive serving HTTP
+    while True:
+        time.sleep(60)
+
+def scan_loop():
     scan=0
     while True:
         scan+=1
