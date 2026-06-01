@@ -2113,7 +2113,18 @@ def main():
             try:
                 # SWING
                 swing_key=sym+"_swing"
-                sw=analyze(coin,"swing")
+                # Skip analyze entirely if signal was sent recently
+                if time.time()-sent_signals.get(swing_key,0)<28800:
+                    print("  " + sym + " swing: cooldown")
+                    sw = None
+                else:
+                    # Also skip if watch was sent recently
+                    wk_pre=sym+"_watch_swing"
+                    if time.time()-sent_watches.get(wk_pre,0)<14400:
+                        sw=None  # skip - watch cooldown active
+                        print("  " + sym + " swing watch: cooldown")
+                    else:
+                        sw=analyze(coin,"swing")
                 if sw:
                     if sw.get("watch"):
                         # Hard filter: never send watch below 55
@@ -2148,7 +2159,18 @@ def main():
 
                 # SCALP
                 scalp_key=sym+"_scalp"
-                sc=analyze(coin,"scalp")
+                # Skip analyze entirely if signal was sent recently
+                if time.time()-sent_signals.get(scalp_key,0)<14400:
+                    print("  " + sym + " scalp: cooldown")
+                    sc = None
+                else:
+                    # Also skip if watch was sent recently
+                    wk_pre_sc=sym+"_watch_scalp"
+                    if time.time()-sent_watches.get(wk_pre_sc,0)<7200:
+                        sc=None  # skip - watch cooldown active
+                        print("  " + sym + " scalp watch: cooldown")
+                    else:
+                        sc=analyze(coin,"scalp")
                 if sc:
                     if sc.get("watch"):
                         # Hard filter: never send watch below 55
