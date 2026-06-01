@@ -226,7 +226,7 @@ def fetch_market_context():
             r = requests.get(
                 "https://api.coingecko.com/api/v3/global",
                 timeout=15,
-                headers={"User-Agent": "SIGNALSYM/8.0", "Accept": "application/json"}
+                headers={"User-Agent": "SIGNALSYM/8.0", "Accept": "application/json", "x-cg-demo-api-key": "CG-FPGBHDZ1DTNv1Uj1Uowe4pZ7"}
             )
             if r.status_code == 200:
                 gdata = r.json().get("data", {})
