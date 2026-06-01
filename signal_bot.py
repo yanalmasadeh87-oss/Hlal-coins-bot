@@ -2115,7 +2115,6 @@ def main():
 
         market_ctx = fetch_market_context()
         signals=0; watches=0
-        this_scan_sent = set()  # tracks what was sent THIS scan — dedup within scan
 
         try:
             test=requests.get(BN_BASE+"/ping",timeout=10)
@@ -2132,78 +2131,72 @@ def main():
 
         for coin in HALAL_WATCHLIST:
             sym=coin["sym"]
-            print("  " + sym + "...")
+            print("  " + sym + "...", flush=True)
 
             try:
-                # SWING
-                swing_key=sym+"_swing"
-                # Skip analyze entirely if signal was sent recently
-                if time.time()-sent_signals.get(swing_key,0)<28800:
-                    print("  " + sym + " swing: cooldown")
-                    sw = None
+                now = time.time()
+
+                # ── SWING ──────────────────────────────────────
+                swing_key = sym + "_swing"
+                sw_cd = now - sent_signals.get(swing_key, 0)
+                if sw_cd < 28800:
+                    print("  " + sym + " swing: cooldown " + str(round((28800-sw_cd)/3600,1)) + "hr left")
                 else:
-                    sw=analyze(coin,"swing")
-                if sw:
-                    if sw.get("watch"):
-                        # No watch messages — silence below 75
-                        print("  " + sym + " swing: developing score=" + str(sw.get("score",0)))
-                    else:
-                        if time.time()-sent_signals.get(swing_key,0)<28800:  # 8hr cooldown
-                            print("S(cd)",end=" ")
+                    sw = analyze(coin, "swing")
+                    if sw and not sw.get("watch"):
+                        # Final cooldown check (state may have been updated mid-scan)
+                        if time.time() - sent_signals.get(swing_key, 0) < 28800:
+                            print("  " + sym + " swing: cooldown (late check)")
                         else:
-                            sig_hash = sym + "_swing_" + str(round(sw["current"],4))
-                            if sig_hash in this_scan_sent:
-                                print("DEDUP(swing)",end=" ")
-                            else:
-                                print(str(sw["score"])+"/100["+sw.get("struct_type","")+"]",end=" ")
-                                send_msg(build_msg(sw))
-                                sent_signals[swing_key]=time.time(); signals+=1
-                                this_scan_sent.add(sig_hash)
-                                save_state()
-                            active_trades[swing_key]={"sym":sym,"type":"SWING","entry":sw["current"],
+                            print(sym + " SWING " + str(sw["score"]) + "/100 SENDING")
+                            send_msg(build_msg(sw))
+                            sent_signals[swing_key] = time.time()
+                            signals += 1
+                            save_state()
+                            active_trades[swing_key] = {
+                                "sym":sym,"type":"SWING","entry":sw["current"],
                                 "sl":sw["sl"],"tp1":sw["tp1"],"tp2":sw["tp2"],
                                 "tp3":sw["tp3"],"tp4":sw["tp4"],
                                 "hit_tp1":False,"hit_tp2":False,"hit_tp3":False,"hit_tp4":False,
-                                "closed":False,"time":time.time()}
-                            time.sleep(2)
-                else:
-                    print("  " + sym + " swing: NO SIGNAL")
-
-                # SCALP
-                scalp_key=sym+"_scalp"
-                # Skip analyze entirely if signal was sent recently
-                if time.time()-sent_signals.get(scalp_key,0)<14400:
-                    print("  " + sym + " scalp: cooldown")
-                    sc = None
-                else:
-                    sc=analyze(coin,"scalp")
-                if sc:
-                    if sc.get("watch"):
-                        # No watch messages — silence below 75
-                        print("  " + sym + " scalp: developing score=" + str(sc.get("score",0)))
+                                "closed":False,"time":time.time()
+                            }
+                            time.sleep(3)
+                    elif sw and sw.get("watch"):
+                        print("  " + sym + " swing: score=" + str(sw.get("score",0)) + " below 75")
                     else:
-                        if time.time()-sent_signals.get(scalp_key,0)<14400:  # 4hr cooldown
-                            print("SC(cd)")
+                        print("  " + sym + " swing: NO SIGNAL")
+
+                # ── SCALP ──────────────────────────────────────
+                scalp_key = sym + "_scalp"
+                sc_cd = now - sent_signals.get(scalp_key, 0)
+                if sc_cd < 14400:
+                    print("  " + sym + " scalp: cooldown " + str(round((14400-sc_cd)/3600,1)) + "hr left")
+                else:
+                    sc = analyze(coin, "scalp")
+                    if sc and not sc.get("watch"):
+                        # Final cooldown check
+                        if time.time() - sent_signals.get(scalp_key, 0) < 14400:
+                            print("  " + sym + " scalp: cooldown (late check)")
                         else:
-                            sig_hash = sym + "_scalp_" + str(round(sc["current"],4))
-                            if sig_hash in this_scan_sent:
-                                print("DEDUP(scalp)")
-                            else:
-                                print(str(sc["score"])+"/100["+sc.get("struct_type","")+"]")
-                                send_msg(build_msg(sc))
-                                sent_signals[scalp_key]=time.time(); signals+=1
-                                this_scan_sent.add(sig_hash)
-                                save_state()
-                            active_trades[scalp_key]={"sym":sym,"type":"SCALP","entry":sc["current"],
+                            print(sym + " SCALP " + str(sc["score"]) + "/100 SENDING")
+                            send_msg(build_msg(sc))
+                            sent_signals[scalp_key] = time.time()
+                            signals += 1
+                            save_state()
+                            active_trades[scalp_key] = {
+                                "sym":sym,"type":"SCALP","entry":sc["current"],
                                 "sl":sc["sl"],"tp1":sc["tp1"],"tp2":sc["tp2"],
                                 "tp3":sc["tp3"],"tp4":sc["tp4"],
                                 "hit_tp1":False,"hit_tp2":False,"hit_tp3":False,"hit_tp4":False,
-                                "closed":False,"time":time.time()}
-                            time.sleep(2)
-                else:
-                    print("  " + sym + " scalp: NO SIGNAL")
+                                "closed":False,"time":time.time()
+                            }
+                            time.sleep(3)
+                    elif sc and sc.get("watch"):
+                        print("  " + sym + " scalp: score=" + str(sc.get("score",0)) + " below 75")
+                    else:
+                        print("  " + sym + " scalp: NO SIGNAL")
 
-                time.sleep(2)
+                time.sleep(1)
 
             except Exception as e:
                 import traceback
