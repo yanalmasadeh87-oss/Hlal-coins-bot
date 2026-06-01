@@ -553,23 +553,20 @@ def api():
 # MAIN
 # ================================================================
 def main():
+    api()   # Start API server FIRST so Render health check passes immediately
     load()
-    api()
 
-    # Log startup context immediately
     ctx = market_ctx()
     if ctx:
-        print(f"  Startup CTX: BTC.D={ctx['btc_d']:.1f}% FG={ctx['fg']} TOTAL=${ctx['total']/1e12:.2f}T")
+        print(f"  CTX: BTC.D={ctx['btc_d']:.1f}% FG={ctx['fg']} TOTAL=${ctx['total']/1e12:.2f}T")
 
-    tg(f"[SIGNALSYM V9] Started\n75+ signals only | {len(COINS)} coins\nRestored {len(sent)} cooldowns")
     print(f"SIGNALSYM V9 | {len(COINS)} coins | min score {MIN_SIGNAL_SCORE} | {len(sent)} cooldowns active")
+    tg(f"[SIGNALSYM V9] Started\n75+ signals only | {len(COINS)} coins\n{len(sent)} cooldowns restored")
 
-    # Startup delay — prevents duplicate sends when Render restarts
-    # during deploy. Wait 10s, then recheck state before first scan.
-    print("  Waiting 10s before first scan...")
+    # Brief delay then reload — prevents duplicate sends on Render restarts
     time.sleep(10)
-    load()  # reload state after delay — catches any concurrent instance
-    print(f"  Active cooldowns after reload: {len(sent)}")
+    load()
+    print(f"  Cooldowns after reload: {len(sent)}")
 
     scan=0
     while True:
