@@ -742,6 +742,22 @@ def detect_pivots_adaptive(prices, highs, lows, regime, mode="swing"):
         move = abs((p["price"]-prev["price"])/prev["price"]) if prev["price"] > 0 else 0
         if move >= min_move: sig.append(p)
 
+    # W1 size filter — adaptive based on ATR not fixed %
+    # Removes structures where the first wave is smaller than
+    # the coin's normal daily noise (ATR-based threshold)
+    if len(sig) >= 2:
+        w1_size = abs(sig[1]["price"] - sig[0]["price"])
+        # Use ATR-based minimum: at least 1.5x ATR to be meaningful
+        # For swing: atr from regime, for scalp same
+        atr_val = regime.get("atr", 0)
+        if atr_val > 0:
+            min_w1 = atr_val * 1.5
+        else:
+            # Fallback: 3% of current price (half the old 6% — less aggressive)
+            min_w1 = prices[-1] * 0.03
+        if w1_size < min_w1:
+            sig = sig[:1] + [sig[-1]]
+
     return sig, win, min_move
 
 # ================================================================
