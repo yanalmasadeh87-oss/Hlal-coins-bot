@@ -166,21 +166,39 @@ def send_msg(msg):
 # DATA FETCH - V7: Multi-timeframe support with opens
 # ================================================================
 def fetch_klines_full(sym, interval="1d", limit=365):
-    try:
-        r = requests.get(BN_BASE + "/klines",
-            params={"symbol":sym+"USDT","interval":interval,"limit":limit}, timeout=15)
-        data = r.json()
-        if not data or isinstance(data, dict):
-            return [],[],[],[],[]
-        prices=[float(k[4]) for k in data]
-        highs=[float(k[2]) for k in data]
-        lows=[float(k[3]) for k in data]
-        vols=[float(k[5]) for k in data]
-        opens=[float(k[1]) for k in data]
-        return prices,highs,lows,vols,opens
-    except Exception as e:
-        print("  Fetch error " + sym + " " + interval + ": " + str(e)[:60])
-        return [],[],[],[],[]
+    """Fetch with retry and exponential backoff for Binance rate limits."""
+    for attempt in range(3):
+        try:
+            if attempt > 0:
+                wait = 2 ** attempt
+                print("  Retry " + sym + " " + interval + " attempt " + str(attempt+1) + " wait " + str(wait) + "s", flush=True)
+                time.sleep(wait)
+            r = requests.get(BN_BASE + "/klines",
+                params={"symbol":sym+"USDT","interval":interval,"limit":limit},
+                timeout=20)
+            # Check for rate limit
+            if r.status_code == 429:
+                print("  RATE LIMITED by Binance — waiting 30s", flush=True)
+                time.sleep(30)
+                continue
+            if r.status_code == 418:
+                print("  IP BANNED by Binance — waiting 60s", flush=True)
+                time.sleep(60)
+                continue
+            data = r.json()
+            if not data or isinstance(data, dict):
+                if attempt == 2:
+                    print("  Fetch empty " + sym + " " + interval + " status=" + str(r.status_code), flush=True)
+                continue
+            prices=[float(k[4]) for k in data]
+            highs=[float(k[2]) for k in data]
+            lows=[float(k[3]) for k in data]
+            vols=[float(k[5]) for k in data]
+            opens=[float(k[1]) for k in data]
+            return prices,highs,lows,vols,opens
+        except Exception as e:
+            print("  Fetch error " + sym + " " + interval + " attempt " + str(attempt+1) + ": " + str(e)[:60], flush=True)
+    return [],[],[],[],[]
 
 def fetch_global_ath(sym):
     try:
@@ -2421,6 +2439,18 @@ def main():
         signals = 0
         watches = 0
 
+        # Quick Binance connectivity check before scanning
+        try:
+            test = requests.get(BN_BASE + "/ping", timeout=5)
+            if test.status_code != 200:
+                print("  Binance API not responding (status=" + str(test.status_code) + ") — skipping scan", flush=True)
+                time.sleep(60)
+                continue
+        except:
+            print("  Binance unreachable — skipping scan", flush=True)
+            time.sleep(60)
+            continue
+
         for coin in HALAL_WATCHLIST:
             sym = coin["sym"]
             print("  " + sym + "...", flush=True)
@@ -2504,7 +2534,7 @@ def main():
                 else:
                     print("  " + sym + " scalp: NO SIGNAL", flush=True)
 
-                time.sleep(1)
+                time.sleep(2)  # Increased to reduce Binance rate limit
 
             except Exception as e:
                 import traceback
