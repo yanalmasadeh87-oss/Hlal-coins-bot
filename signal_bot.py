@@ -127,63 +127,7 @@ market_ctx     = None
 _ctx_history   = []
 _structure_memory = {}
 
-# ================================================================
-# CIRCULATING SUPPLIES (updated quarterly - used for BTC.D calc)
-# Binance only gives price, we need supply for market cap estimation
-# These are approximate but consistent - updated May 2026
-# ================================================================
-SUPPLY_MAP = {
-    "BTC":  19_700_000,
-    "ETH":  120_000_000,
-    "BNB":  145_000_000,
-    "SOL":  465_000_000,
-    "XRP":  57_000_000_000,
-    "ADA":  35_000_000_000,
-    "AVAX": 400_000_000,
-    "DOGE": 145_000_000_000,
-    "TRX":  87_000_000_000,
-    "TON":  2_500_000_000,
-    "LINK": 587_000_000,
-    "DOT":  1_400_000_000,
-    "MATIC":10_000_000_000,
-    "LTC":  74_000_000,
-    "BCH":  19_700_000,
-    "SUI":  2_500_000_000,
-    "NEAR": 1_100_000_000,
-    "ICP":  510_000_000,
-    "OP":   1_350_000_000,
-    "ARB":  3_400_000_000,
-    "ATOM": 390_000_000,
-    "APT":  560_000_000,
-    "FIL":  580_000_000,
-    "INJ":  100_000_000,
-    "RENDER":530_000_000,
-    "GRT":  9_500_000_000,
-    "HBAR": 37_000_000_000,
-    "VET":  72_700_000_000,
-    "STX":  1_440_000_000,
-    "ALGO": 8_000_000_000,
-    "XTZ":  960_000_000,
-    "EGLD": 26_300_000,
-    "THETA":1_000_000_000,
-    "XLM":  29_000_000_000,
-    "FTM":  2_800_000_000,
-    "FLOW": 1_400_000_000,
-    "GALA": 22_500_000_000,
-    "AXS":  270_000_000,
-    "SAND": 1_920_000_000,
-    "MANA": 1_890_000_000,
-    "ENJ":  1_000_000_000,
-    "CHZ":  8_880_000_000,
-    "BAT":  1_490_000_000,
-    "LPT":  30_000_000,
-}
 
-# Top coins to fetch for market cap calculation (available on Binance.US)
-MCAP_COINS = ["BTC","ETH","BNB","SOL","XRP","ADA","AVAX","TON","LINK","DOT",
-              "LTC","BCH","SUI","NEAR","ICP","OP","ARB","ATOM","APT","FIL",
-              "INJ","RENDER","GRT","HBAR","VET","STX","ALGO","XTZ","THETA",
-              "XLM","FTM","GALA","AXS","SAND","MANA","ENJ","CHZ","BAT"]
 
 # ================================================================
 # TELEGRAM
@@ -255,137 +199,132 @@ def fetch_global_ath(sym):
         return 0
 
 # ================================================================
-# V8: LIVE MARKET CONTEXT — 100% BINANCE, NO COINGECKO
-# BTC.D calculated from real prices × circulating supply
+# MARKET CONTEXT — CoinGecko for BTC.D/TOTAL/TOTAL3 (exact real data)
+# Retries up to 3 times per scan. Never falls back to fake 50%.
+# If all retries fail, skips the scan rather than use wrong data.
 # ================================================================
+_cg_last_success = 0
+_cg_cached = None
+
 def fetch_market_context():
     """
-    Calculates BTC.D, TOTAL, TOTAL3 entirely from Binance prices.
-    No CoinGecko. No rate limits. Always live.
-
-    Method:
-      1. Fetch current prices for top ~38 coins via Binance ticker
-      2. Multiply each price × hardcoded circulating supply = market cap
-      3. BTC.D = BTC_mcap / sum(all_mcaps) × 100
-      4. TOTAL = sum(all_mcaps)
-      5. TOTAL3 = TOTAL - BTC_mcap - ETH_mcap
-      6. Fear & Greed from alternative.me (separate, lightweight API)
+    Fetches BTC.D, TOTAL, TOTAL3 from CoinGecko /v3/global.
+    This is the ONLY source — no calculations, no estimates.
+    Retries 3 times with backoff. Uses last successful value if
+    within 2 hours. Beyond 2 hours stale = return None (skip scan).
+    Fear & Greed from alternative.me separately.
     """
-    global _ctx_history
-    try:
-        # ---- STEP 1: Fetch all prices in ONE Binance call ----
-        syms_needed = list(set(MCAP_COINS))
-        tickers_url = BN_BASE + "/ticker/price"
-        r = requests.get(tickers_url, timeout=15)
-        if r.status_code != 200:
-            print("  [CTX] Binance ticker failed status=" + str(r.status_code) + " — using fallback")
-            return _build_fallback_ctx()
+    global _ctx_history, _cg_last_success, _cg_cached
 
-        all_tickers = r.json()  # list of {symbol, price}
-        price_map = {}
-        for t in all_tickers:
-            sym = t["symbol"]
-            if sym.endswith("USDT"):
-                base = sym[:-4]
-                price_map[base] = float(t["price"])
-
-        # ---- STEP 2: Calculate market caps ----
-        total_mcap   = 0.0
-        btc_mcap     = 0.0
-        eth_mcap     = 0.0
-        coins_counted = 0
-
-        for coin in MCAP_COINS:
-            price   = price_map.get(coin, 0)
-            supply  = SUPPLY_MAP.get(coin, 0)
-            if price > 0 and supply > 0:
-                mcap = price * supply
-                total_mcap += mcap
-                if coin == "BTC":
-                    btc_mcap = mcap
-                elif coin == "ETH":
-                    eth_mcap = mcap
-                coins_counted += 1
-
-        if total_mcap == 0 or btc_mcap == 0:
-            print("  [CTX] Market cap calc failed — using fallback")
-            return _build_fallback_ctx()
-
-        btc_dom  = btc_mcap / total_mcap * 100
-        total3   = total_mcap - btc_mcap - eth_mcap
-
-        # Sanity check
-        if btc_dom < 20 or btc_dom > 85:
-            btc_dom = 50
-
-        print("  [CTX] Live from Binance: " + str(coins_counted) + " coins | BTC mcap=$" +
-              str(round(btc_mcap/1e9,1)) + "B | TOTAL=$" + str(round(total_mcap/1e9,1)) + "B")
-
-        # ---- STEP 3: Fear & Greed ----
-        fg_now = 50; fg_7d = 50
+    # --- CoinGecko: up to 3 attempts ---
+    cg_data = None
+    for attempt in range(3):
         try:
-            r3 = requests.get("https://api.alternative.me/fng/?limit=7", timeout=10)
-            fng = r3.json().get("data", [])
-            fg_now = int(fng[0]["value"]) if fng else 50
-            fg_7d  = int(fng[-1]["value"]) if len(fng) >= 7 else fg_now
-        except:
-            print("  [CTX] FNG failed — using neutral 50")
+            if attempt > 0:
+                time.sleep(5 * attempt)
+                print("  [CTX] CoinGecko retry " + str(attempt + 1))
+            r = requests.get(
+                "https://api.coingecko.com/api/v3/global",
+                timeout=15,
+                headers={"User-Agent": "SIGNALSYM/8.0", "Accept": "application/json"}
+            )
+            if r.status_code == 200:
+                gdata = r.json().get("data", {})
+                btc_dom = float(gdata["market_cap_percentage"]["btc"])
+                eth_dom = float(gdata["market_cap_percentage"].get("eth", 10))
+                total   = float(gdata["total_market_cap"]["usd"])
+                btc_mcap = total * btc_dom / 100
+                eth_mcap = total * eth_dom / 100
+                total3   = total - btc_mcap - eth_mcap
+                cg_data  = {
+                    "btc_dom": round(btc_dom, 2),
+                    "total":   total,
+                    "total3":  total3,
+                    "btc_mcap": btc_mcap,
+                    "eth_mcap": eth_mcap,
+                }
+                _cg_last_success = time.time()
+                _cg_cached = cg_data
+                print("  [CTX] CoinGecko OK: BTC.D=" + str(round(btc_dom, 2)) +
+                      "% TOTAL=$" + str(round(total / 1e12, 2)) + "T")
+                break
+            elif r.status_code == 429:
+                wait = 20 * (attempt + 1)
+                print("  [CTX] CoinGecko rate limit — waiting " + str(wait) + "s")
+                time.sleep(wait)
+            else:
+                print("  [CTX] CoinGecko status=" + str(r.status_code))
+        except Exception as e:
+            print("  [CTX] CoinGecko error attempt " + str(attempt + 1) + ": " + str(e)[:60])
 
-        if fg_now <= 20:   fg_zone = "EXTREME_FEAR"
-        elif fg_now <= 40: fg_zone = "FEAR"
-        elif fg_now <= 60: fg_zone = "NEUTRAL"
-        elif fg_now <= 80: fg_zone = "GREED"
-        else:              fg_zone = "EXTREME_GREED"
+    # If CoinGecko failed, use cache if within 2 hours
+    if cg_data is None:
+        if _cg_cached and (time.time() - _cg_last_success) < 7200:
+            age_min = round((time.time() - _cg_last_success) / 60)
+            print("  [CTX] Using cached data (" + str(age_min) + "min old) — still valid")
+            cg_data = _cg_cached
+        else:
+            # Cache too old or no cache — return None to skip this scan
+            age = "no cache" if not _cg_cached else str(round((time.time() - _cg_last_success)/60)) + "min old"
+            print("  [CTX] CoinGecko unavailable (" + age + ") — scan will skip market filters")
+            return None
 
-        fg_trend = "RISING" if fg_now > fg_7d + 3 else "FALLING" if fg_now < fg_7d - 3 else "NEUTRAL"
+    # --- Fear & Greed ---
+    fg_now = 50; fg_7d = 50
+    try:
+        r3 = requests.get("https://api.alternative.me/fng/?limit=7", timeout=10)
+        fng = r3.json().get("data", [])
+        fg_now = int(fng[0]["value"]) if fng else 50
+        fg_7d  = int(fng[-1]["value"]) if len(fng) >= 7 else fg_now
+    except:
+        print("  [CTX] FNG failed — using neutral 50")
 
-        # ---- STEP 4: Build context ----
-        ctx = {
-            "btc_dom":  round(btc_dom, 2),
-            "total":    total_mcap,
-            "total3":   total3,
-            "btc_mcap": btc_mcap,
-            "eth_mcap": eth_mcap,
-            "fg_now":   fg_now,
-            "fg_zone":  fg_zone,
-            "fg_trend": fg_trend,
-            "coins_counted": coins_counted,
-            "source": "binance_live"
-        }
+    if fg_now <= 20:   fg_zone = "EXTREME_FEAR"
+    elif fg_now <= 40: fg_zone = "FEAR"
+    elif fg_now <= 60: fg_zone = "NEUTRAL"
+    elif fg_now <= 80: fg_zone = "GREED"
+    else:              fg_zone = "EXTREME_GREED"
 
-        _ctx_history.append({"btc_dom": btc_dom, "total": total_mcap, "total3": total3, "ts": time.time()})
-        if len(_ctx_history) > 96:
-            _ctx_history.pop(0)
+    fg_trend = "RISING" if fg_now > fg_7d + 3 else "FALLING" if fg_now < fg_7d - 3 else "NEUTRAL"
 
-        def get_trend(key):
-            if len(_ctx_history) < 4: return "NEUTRAL"
-            old = _ctx_history[0][key]; new = _ctx_history[-1][key]
-            if old == 0: return "NEUTRAL"
-            chg = (new - old) / old * 100
-            return "RISING" if chg > 3.0 else "FALLING" if chg < -3.0 else "NEUTRAL"
-
-        ctx["btc_dom_trend"] = get_trend("btc_dom")
-        ctx["total_trend"]   = get_trend("total")
-        ctx["total3_trend"]  = get_trend("total3")
-        ctx["history_len"]   = len(_ctx_history)
-
-        print("  CTX: BTC.D=" + str(round(btc_dom,1)) + "% FG=" + str(fg_now) +
-              "(" + fg_zone + ") TOTAL=$" + str(round(total_mcap/1e12,2)) + "T [LIVE]")
-        return ctx
-
-    except Exception as e:
-        print("  [CTX] Failed: " + str(e))
-        return _build_fallback_ctx()
-
-def _build_fallback_ctx():
-    """Emergency fallback — neutral values, clearly labeled."""
-    return {
-        "btc_dom": 50, "total": 0, "total3": 0,
-        "btc_mcap": 0, "eth_mcap": 0,
-        "fg_now": 50, "fg_zone": "NEUTRAL", "fg_trend": "NEUTRAL",
-        "btc_dom_trend": "NEUTRAL", "total_trend": "NEUTRAL", "total3_trend": "NEUTRAL",
-        "history_len": 0, "source": "fallback"
+    ctx = {
+        "btc_dom":  cg_data["btc_dom"],
+        "total":    cg_data["total"],
+        "total3":   cg_data["total3"],
+        "btc_mcap": cg_data["btc_mcap"],
+        "eth_mcap": cg_data["eth_mcap"],
+        "fg_now":   fg_now,
+        "fg_zone":  fg_zone,
+        "fg_trend": fg_trend,
+        "source":   "coingecko_live"
     }
+
+    _ctx_history.append({
+        "btc_dom": cg_data["btc_dom"],
+        "total":   cg_data["total"],
+        "total3":  cg_data["total3"],
+        "ts":      time.time()
+    })
+    if len(_ctx_history) > 96:
+        _ctx_history.pop(0)
+
+    def get_trend(key):
+        if len(_ctx_history) < 4: return "NEUTRAL"
+        old = _ctx_history[0][key]; new = _ctx_history[-1][key]
+        if old == 0: return "NEUTRAL"
+        chg = (new - old) / old * 100
+        return "RISING" if chg > 3.0 else "FALLING" if chg < -3.0 else "NEUTRAL"
+
+    ctx["btc_dom_trend"] = get_trend("btc_dom")
+    ctx["total_trend"]   = get_trend("total")
+    ctx["total3_trend"]  = get_trend("total3")
+    ctx["history_len"]   = len(_ctx_history)
+
+    print("  CTX: BTC.D=" + str(ctx["btc_dom"]) + "% FG=" + str(fg_now) +
+          "(" + fg_zone + ") TOTAL=$" + str(round(ctx["total"]/1e12, 2)) + "T [CoinGecko LIVE]")
+    return ctx
+
+# _build_fallback_ctx removed in V8 — CoinGecko with retry is the only source
 
 def context_adjustment(sym, ctx):
     if not ctx: return 0
