@@ -742,11 +742,6 @@ def detect_pivots_adaptive(prices, highs, lows, regime, mode="swing"):
         move = abs((p["price"]-prev["price"])/prev["price"]) if prev["price"] > 0 else 0
         if move >= min_move: sig.append(p)
 
-    if len(sig) >= 2:
-        w1_size = abs(sig[1]["price"] - sig[0]["price"])
-        if w1_size / prices[-1] * 100 < 6.0:
-            sig = sig[:1] + [sig[-1]]
-
     return sig, win, min_move
 
 # ================================================================
@@ -830,10 +825,12 @@ def htf_validation(sym):
         w_ma50 = sum(w_prices[-50:]) / 50 if len(w_prices) >= 50 else w_ma20
         w_cur  = w_prices[-1]
         w_mom  = (w_prices[-1]-w_prices[-4])/w_prices[-4]*100 if len(w_prices) >= 4 else 0
-        if w_cur < w_ma20 and w_cur < w_ma50 * 0.95:
-            return False, "HTF BLOCKED: Weekly bearish"
-        if w_mom < -20:
-            return False, "HTF BLOCKED: Weekly momentum -20%"
+        # Only block truly bearish coins — deep below both MAs
+        # Coins correcting near MA20/MA50 are normal buy zones
+        if w_cur < w_ma20 * 0.85 and w_cur < w_ma50 * 0.80:
+            return False, "HTF BLOCKED: Weekly deeply bearish (>15% below MA20)"
+        if w_mom < -30:
+            return False, "HTF BLOCKED: Weekly momentum < -30%"
         trend = "bull" if w_cur > w_ma20 else "neutral" if w_cur > w_ma50 else "bear"
         return True, "HTF OK: Weekly " + trend
     except:
@@ -1023,22 +1020,21 @@ def detect_trend_continuation(prices, highs, lows, pivots, current, trend, htf_p
         htf_bullish = htf_prices[-1] > htf_ma20
     if not htf_bullish: return None
 
-    recent_peaks   = [p for p in pivots if p["type"]=="peak"   and p["idx"] > len(prices)*0.3]
-    recent_troughs = [p for p in pivots if p["type"]=="trough" and p["idx"] > len(prices)*0.3]
-    if len(recent_peaks) < 3 or len(recent_troughs) < 3: return None
+    recent_peaks   = [p for p in pivots if p["type"]=="peak"   and p["idx"] > len(prices)*0.2]
+    recent_troughs = [p for p in pivots if p["type"]=="trough" and p["idx"] > len(prices)*0.2]
+    if len(recent_peaks) < 2 or len(recent_troughs) < 2: return None
 
     hh1 = recent_peaks[-1]["price"]   > recent_peaks[-2]["price"]
-    hh2 = recent_peaks[-2]["price"]   > recent_peaks[-3]["price"]
     hl1 = recent_troughs[-1]["price"] > recent_troughs[-2]["price"]
-    hl2 = recent_troughs[-2]["price"] > recent_troughs[-3]["price"]
-    if not (hh1 and hh2 and hl1 and hl2): return None
+    # Need at least 2 HH and 2 HL — basic uptrend structure
+    if not (hh1 and hl1): return None
 
     adx = calc_adx(highs, lows, prices, 14)
-    if adx["adx"] < 30: return None
+    if adx["adx"] < 20: return None  # Lowered from 30
     momentum = (prices[-1]-prices[-20])/prices[-20]*100 if len(prices) >= 20 else 0
-    if momentum < 5: return None
+    if momentum < 2: return None  # Lowered from 5%
     ma50 = sum(prices[-50:]) / 50 if len(prices) >= 50 else current
-    if current < ma50*0.98: return None
+    if current < ma50*0.95: return None  # Loosened from 0.98
 
     if len(pivots) >= 5:
         return {"type":"TREND_CONTINUATION","sub_type":"IMPULSE_W3_LIKELY",
@@ -1147,6 +1143,48 @@ def recognize_chart_structure(prices, highs, lows, opens, pivots, current, pct_a
     triangle = detect_triangle(prices, highs, lows, pivots)
     if triangle and triangle.get("sub_type") != "TRIANGLE_EXPAND":
         add_candidate(triangle)
+
+    # CANDIDATE 4.5: IMPULSING phase pullback entry
+    # When coin is in strong uptrend (IMPULSING/TRENDING_UP),
+    # look for the most recent higher low as a W4 pullback entry
+    if phase in ("IMPULSING", "TRENDING_UP"):
+        recent_troughs = [p for p in pivots if p["type"] == "trough"]
+        recent_peaks   = [p for p in pivots if p["type"] == "peak"]
+        if len(recent_troughs) >= 2 and len(recent_peaks) >= 2:
+            last_trough = recent_troughs[-1]
+            last_peak   = recent_peaks[-1]
+            prev_trough = recent_troughs[-2]
+            # Higher low = valid pullback in uptrend
+            if (last_trough["price"] > prev_trough["price"] and
+                last_peak["price"] > prev_trough["price"] and
+                abs(current - last_trough["price"]) / last_trough["price"] < 0.15):
+                w3_range = last_peak["price"] - prev_trough["price"]
+                w4_ret   = (last_peak["price"] - last_trough["price"]) / w3_range if w3_range > 0 else 0
+                bb_lo = last_peak["price"] - w3_range * 0.786
+                bb_hi = last_peak["price"] - w3_range * 0.382
+                in_bb = bb_lo <= current <= bb_hi
+                score = 55 + (10 if 0.236 <= w4_ret <= 0.5 else 5) + (5 if in_bb else 0)
+                add_candidate({
+                    "type": "EW_W4",
+                    "label": "Impulse Pullback — W4 Entry (" + phase + ")",
+                    "entry_wave": "W4 pullback",
+                    "entry_price": last_trough["price"],
+                    "w1h": recent_peaks[-2]["price"] if len(recent_peaks) >= 2 else last_peak["price"],
+                    "w2l": prev_trough["price"],
+                    "w3h": last_peak["price"],
+                    "w4l": last_trough["price"],
+                    "w1": last_peak["price"] - prev_trough["price"],
+                    "w3": w3_range,
+                    "w2_ret": 0.5,
+                    "w4_ret": w4_ret,
+                    "fib_label": "W4 pullback",
+                    "fib_valid": True,
+                    "in_blue_box": in_bb,
+                    "score": score,
+                    "sit_applicable": ["rsi_ok", "macd_ok", "vol_dec", "vol_exp"],
+                    "sit_na": ["fib_golden", "blue_box", "alternation", "wave_symmetry", "wxyxz"],
+                    "recency": 0.0
+                })
 
     # CANDIDATES 5-7: EW Structures
     n = len(pivots)
@@ -1463,29 +1501,74 @@ def calculate_adaptive_risk(struct_type, sub_type, pivots, current, regime, atr,
             sl_reason="ATR-based trend SL"
 
     elif struct_type=="EW_W4" and len(pivots)>=5:
-        w1h=pivots[1]["price"]; w3h=pivots[3]["price"]; w3r=w3h-pivots[2]["price"]
-        sl=w1h*0.99; tp1=w3h; tp2=w3h+w3r*0.618*ext_mult
-        tp3=w3h+w3r*1.0*ext_mult; tp4=w3h+w3r*1.618*ext_mult
-        sl_reason="Below W1 Top (W4 overlap rule)"
+        # Use actual EW peaks/troughs not arbitrary pivot indices
+        peaks_w4   = [p for p in pivots if p["type"]=="peak"]
+        troughs_w4 = [p for p in pivots if p["type"]=="trough"]
+        if len(peaks_w4) >= 2 and len(troughs_w4) >= 2:
+            w1h = peaks_w4[-2]["price"] if len(peaks_w4) >= 2 else peaks_w4[-1]["price"]
+            w3h = peaks_w4[-1]["price"]
+            w4l = troughs_w4[-1]["price"]
+            w3r = w3h - (troughs_w4[-2]["price"] if len(troughs_w4) >= 2 else troughs_w4[-1]["price"])
+            # SL below W1 top — EW rule W4 cannot overlap W1
+            sl  = min(w1h * 0.99, current * (1 - sl_pct))
+            tp1 = w3h
+            tp2 = w3h + w3r * 0.618 * ext_mult
+            tp3 = w3h + w3r * 1.0 * ext_mult
+            tp4 = w3h + w3r * 1.618 * ext_mult
+            sl_reason = "Below W1 Top (W4 overlap rule)"
+        else:
+            sl  = current * (1 - sl_pct)
+            tp1 = current * (1 + tp1_pct)
+            tp2 = current * (1 + tp2_pct * ext_mult)
+            tp3 = current * (1 + tp3_pct * ext_mult)
+            tp4 = current * (1 + tp4_pct * ext_mult)
+            sl_reason = "Fixed % fallback (W4)"
 
     elif struct_type in ("ABC_ZIGZAG","EXPANDED_FLAT","RUNNING_CORRECTION"):
         troughs=[p for p in pivots if p["type"]=="trough"]
         peaks=[p for p in pivots if p["type"]=="peak"]
         if len(troughs)>=2 and peaks:
-            a_bot=troughs[-2]["price"]; b_top=peaks[-1]["price"]; wa_rng=abs(b_top-a_bot)
-            sl=a_bot*0.985; tp1=b_top; tp2=b_top+wa_rng*0.618*ext_mult
-            tp3=b_top+wa_rng*1.0*ext_mult; tp4=b_top+wa_rng*1.618*ext_mult
-            sl_reason="Below Wave A Bottom"
+            # Wave A bottom = lowest trough in correction sequence
+            a_bot = min(troughs, key=lambda x: x["price"])["price"]
+            b_top = peaks[-1]["price"]
+            wa_rng = abs(b_top - a_bot)
+            # SL below Wave A bottom with 1.5% buffer
+            sl = a_bot * 0.985
+            tp1 = b_top
+            tp2 = b_top + wa_rng * 0.618 * ext_mult
+            tp3 = b_top + wa_rng * 1.0 * ext_mult
+            tp4 = b_top + wa_rng * 1.618 * ext_mult
+            sl_reason = "Below Wave A Bottom"
         else:
             sl=current*(1-sl_pct); tp1=current*(1+tp1_pct*ext_mult)
             tp2=current*(1+tp2_pct*ext_mult); tp3=current*(1+tp3_pct*ext_mult)
             tp4=current*(1+tp4_pct*ext_mult); sl_reason="Fixed % (fallback)"
 
     elif struct_type=="EW_W2" and len(pivots)>=3:
-        w0=pivots[0]["price"]; w1h=pivots[1]["price"]; w1r=w1h-w0
-        sl=w0*1.01; tp1=w1h; tp2=w1h+w1r*0.618*ext_mult
-        tp3=w1h+w1r*1.0*ext_mult; tp4=w1h+w1r*1.618*ext_mult
-        sl_reason="Below W0 Origin (W2 rule)"
+        # Find the actual wave origin trough (lowest trough before first peak)
+        troughs_ew = [p for p in pivots if p["type"]=="trough"]
+        peaks_ew   = [p for p in pivots if p["type"]=="peak"]
+        if troughs_ew and peaks_ew:
+            # W0 = lowest trough before first peak
+            first_peak_idx = peaks_ew[0]["idx"]
+            pre_peak_troughs = [p for p in troughs_ew if p["idx"] < first_peak_idx]
+            w0_price = pre_peak_troughs[-1]["price"] if pre_peak_troughs else troughs_ew[0]["price"]
+            w1h = peaks_ew[0]["price"]
+            w1r = w1h - w0_price
+            # SL = below W0 origin with 1% buffer — MUST be below current
+            sl = w0_price * 0.99
+            tp1 = w1h
+            tp2 = w1h + w1r * 0.618 * ext_mult
+            tp3 = w1h + w1r * 1.0 * ext_mult
+            tp4 = w1h + w1r * 1.618 * ext_mult
+            sl_reason = "Below W0 Origin (W2 rule)"
+        else:
+            sl = current * (1 - sl_pct)
+            tp1 = current * (1 + tp1_pct)
+            tp2 = current * (1 + tp2_pct * ext_mult)
+            tp3 = current * (1 + tp3_pct * ext_mult)
+            tp4 = current * (1 + tp4_pct * ext_mult)
+            sl_reason = "Fixed % fallback (no pivots)"
 
     elif struct_type=="WXYXZ" and len(pivots)>=4:
         troughs=[p for p in pivots if p["type"]=="trough"]
@@ -1518,10 +1601,22 @@ def calculate_adaptive_risk(struct_type, sub_type, pivots, current, regime, atr,
     if sl>0 and (current-sl)/current>max_sl:
         sl=current*(1-max_sl); sl_reason+=" (capped " + str(round(max_sl*100)) + "%)"
 
-    if tp1<=current: tp1=current*(1+tp1_pct)
-    if tp2<=tp1:     tp2=current*(1+tp2_pct)
-    if tp3<=tp2:     tp3=current*(1+tp3_pct)
-    if tp4<=tp3:     tp4=current*(1+tp4_pct)
+    # ── SANITY CHECKS ──────────────────────────────────────────
+    # SL must be BELOW entry (we only take long signals)
+    if sl >= current:
+        sl = current * (1 - sl_pct)
+        sl_reason += " [SL fixed: was above entry]"
+
+    # SL must not be more than max_sl below entry
+    if sl > 0 and (current - sl) / current > max_sl:
+        sl = current * (1 - max_sl)
+        sl_reason += " (capped " + str(round(max_sl * 100)) + "%)"
+
+    # TPs must be above entry and strictly ascending
+    if tp1 <= current: tp1 = current * (1 + tp1_pct)
+    if tp2 <= tp1:     tp2 = tp1 * (1 + tp2_pct)
+    if tp3 <= tp2:     tp3 = tp2 * (1 + tp3_pct)
+    if tp4 <= tp3:     tp4 = tp3 * (1 + tp4_pct)
 
     return sl, tp1, tp2, tp3, tp4, sl_reason
 
@@ -1548,11 +1643,11 @@ def analyze(coin, signal_type="swing"):
     if signal_type=="swing":
         prices,highs,lows,vols,opens = fetch_klines_full(sym,"1d",730)
         sl_pct=0.05; tp1_pct=0.05; tp2_pct=0.10; tp3_pct=0.15; tp4_pct=0.20
-        min_score=50; hold="Days to weeks"
+        min_score=60; hold="Days to weeks"
     else:
         prices,highs,lows,vols,opens = fetch_klines_full(sym,"4h",540)
         sl_pct=0.03; tp1_pct=0.03; tp2_pct=0.05; tp3_pct=0.08; tp4_pct=0.12
-        min_score=45; hold="1-3 days"
+        min_score=60; hold="1-3 days"
 
     if len(prices) < 50:
         print("  [" + signal_type + "] " + sym + " BLOCKED: only " + str(len(prices)) + " candles")
@@ -1638,9 +1733,15 @@ def analyze(coin, signal_type="swing"):
     sub_type     = chart.get("sub_type","")
     conf_score   = chart.get("confidence_score",0)
 
-    # V8 FIX #1: DOUBLE_TOP_WATCH → send watch alert, not a block
+    # V8 FIX #1: DOUBLE_TOP_WATCH → send watch alert with 6hr cooldown
     if struct_type == "DOUBLE_TOP_WATCH":
+        # Only alert once per 6 hours per coin — not every scan
+        dt_key = sym + "_dt_" + signal_type
+        if time.time() - sent_watches.get(dt_key, 0) < 21600:
+            print("    [" + signal_type + "] " + sym + " DOUBLE_TOP watch cooldown — skip")
+            return None
         print("    [" + signal_type + "] " + sym + " DOUBLE_TOP — sending watch alert")
+        sent_watches[dt_key] = time.time()
         return {
             "watch": True, "type": signal_type.upper(), "sym": sym,
             "current": current, "score": 20, "rsi": rsi_val, "stoch": stoch,
@@ -1728,12 +1829,17 @@ def analyze(coin, signal_type="swing"):
     is_locked = chart.get("locked",False)
     position_size = calculate_position_size(final_score, regime, trend["label"], is_locked)
 
-    if final_score>=85:       conf="HIGH"
-    elif final_score>=70:     conf="MEDIUM-HIGH"
-    elif final_score>=55:     conf="MEDIUM"
-    else:                     conf="DEVELOPING"
+    if final_score>=85:    conf="HIGH — STRONG BUY"
+    elif final_score>=80:  conf="MEDIUM-HIGH — STRONG BUY"
+    elif final_score>=70:  conf="MEDIUM — MONITORING"
+    elif final_score>=60:  conf="DEVELOPING — MONITORING"
+    else:                  conf="LOW"
 
     if final_score < min_score:
+        # Only send watch if score >= 40, otherwise skip entirely
+        if final_score < 40:
+            print("    [" + signal_type + "] " + sym + " SKIPPED: watch score too low=" + str(final_score))
+            return None
         return {
             "watch":True,"type":signal_type.upper(),"sym":sym,
             "current":current,"score":final_score,"rsi":rsi_val,"stoch":stoch,
@@ -1797,7 +1903,8 @@ def build_msg(sig):
     msg += "🎯 TP3:   " + fp(sig["tp3"]) + "  " + pct(sig["tp3"]) + "\n"
     msg += "🎯 TP4:   " + fp(sig["tp4"]) + "  " + pct(sig["tp4"]) + "\n\n"
     msg += "⏱ Hold: " + sig["hold"] + "\n"
-    msg += "⚡ Score: " + str(sig["score"]) + "/100 — " + sig["conf"]
+    msg += "⚡ Score: " + str(sig["score"]) + "/100\n"
+    msg += "📊 Situation: " + sig["conf"]
     return msg
 
 def build_watch_msg(sym, sig_type, current, score, rsi, struct_label, reason, position_size=0, extra_info=None):
@@ -1903,10 +2010,13 @@ def main():
     if tg_ok:
         msg  = "[BOT V8 STARTED] SIGNALSYM\n"
         msg += "================================\n"
-        msg += "FIXES IN V8:\n"
-        msg += "- BTC.D: Live from Binance (no CoinGecko)\n"
-        msg += "- DOUBLE_TOP: Watch alert (not hard block)\n"
-        msg += "- Scalp DOWNTREND: Checks daily before blocking\n"
+        msg += "Signal: 60/100 min | Watch: 40/100 min\n"
+        msg += "V8.1 — Trending/Impulse fix + SL fix + HTF fix\n"
+        msg += "60-69: Developing — Monitoring\n"
+        msg += "70-79: Medium — Monitoring\n"
+        msg += "80+: Strong Buy\n"
+        msg += "================================\n"
+        msg += "MARKET: CoinGecko Live | PRICE: Binance\n"
         msg += "================================\n"
         msg += "T1 (" + str(len(t1)) + "): " + ", ".join(t1[:8]) + "...\n"
         msg += "T2 (" + str(len(t2)) + "): " + ", ".join(t2[:8]) + "...\n"
