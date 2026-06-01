@@ -197,26 +197,79 @@ def fetch_global_ath(sym):
 # MARKET CONTEXT
 # ================================================================
 def fetch_market_context():
+    """
+    Calculates BTC.D, TOTAL, TOTAL3 directly from Binance prices.
+    No external market cap API needed — 100% Binance data.
+
+    Method:
+    - Fetch prices for BTC, ETH, and top 20 coins from Binance
+    - Multiply each price by circulating supply (hardcoded, updated quarterly)
+    - BTC.D = BTC_mcap / sum(all_mcaps)
+    - TOTAL3 = total - BTC_mcap - ETH_mcap
+    """
     global _ctx_history
     try:
-        r1 = requests.get("https://api.alternative.me/v2/global/", timeout=10)
-        g = r1.json().get("data", {})
-        btc_dom = float(g.get("bitcoin_percentage_of_market_cap", 50))
-        # Sanity check — BTC.D must be between 30% and 75%
+        # Circulating supplies (approximate, updated May 2026)
+        SUPPLIES = {
+            "BTC":    19_700_000,
+            "ETH":   120_000_000,
+            "XRP":  57_000_000_000,
+            "BNB":   145_000_000,
+            "SOL":   462_000_000,
+            "ADA": 35_000_000_000,
+            "AVAX":  400_000_000,
+            "DOGE": 144_000_000_000,
+            "TRX":  87_000_000_000,
+            "LINK":  600_000_000,
+            "DOT":  1_400_000_000,
+            "MATIC":10_000_000_000,
+            "LTC":   74_000_000,
+            "UNI":  600_000_000,
+            "ATOM":  390_000_000,
+            "XLM":  29_000_000_000,
+            "NEAR": 1_100_000_000,
+            "ALGO": 8_000_000_000,
+            "FIL":   600_000_000,
+            "APT":   500_000_000,
+        }
+
+        # Fetch all prices in one Binance call
+        syms = list(SUPPLIES.keys())
+        prices_url = BN_BASE + "/ticker/price"
+        r = requests.get(prices_url, timeout=10)
+        all_prices = {item["symbol"]: float(item["price"])
+                      for item in r.json()
+                      if isinstance(item, dict) and "symbol" in item}
+
+        # Calculate market caps
+        mcaps = {}
+        for sym, supply in SUPPLIES.items():
+            price = all_prices.get(sym + "USDT", 0)
+            if price > 0:
+                mcaps[sym] = price * supply
+
+        btc_mcap  = mcaps.get("BTC", 0)
+        eth_mcap  = mcaps.get("ETH", 0)
+        total     = sum(mcaps.values())
+        total3    = total - btc_mcap - eth_mcap
+
+        # BTC.D calculated from real Binance prices
+        btc_dom = (btc_mcap / total * 100) if total > 0 else 50
+
+        # Sanity check
         if btc_dom < 30 or btc_dom > 75:
-            btc_dom = 50  # Alternative.me returned bad data — use neutral
-        total = float(g.get("quotes", {}).get("USD", {}).get("total_market_cap", 0))
+            btc_dom = 50
+            print("  BTC.D sanity check failed — using 50%")
 
-        r2 = requests.get("https://api.alternative.me/v2/ticker/?limit=2&structure=array", timeout=10)
-        t = r2.json().get("data", [])
-        btc_mcap = float(t[0]["quotes"]["USD"]["market_cap"]) if len(t) > 0 else 0
-        eth_mcap = float(t[1]["quotes"]["USD"]["market_cap"]) if len(t) > 1 else 0
-        total3 = total - btc_mcap - eth_mcap if total > 0 else 0
-
-        r3 = requests.get("https://api.alternative.me/fng/?limit=7", timeout=10)
-        fng = r3.json().get("data", [])
-        fg_now = int(fng[0]["value"]) if fng else 50
-        fg_7d = int(fng[-1]["value"]) if len(fng) >= 7 else fg_now
+        # Fear & Greed from Alternative.me — with fallback
+        fg_now = 50; fg_7d = 50
+        try:
+            r3 = requests.get("https://api.alternative.me/fng/?limit=7", timeout=10)
+            fng = r3.json().get("data", [])
+            fg_now = int(fng[0]["value"]) if fng else 50
+            fg_7d  = int(fng[-1]["value"]) if len(fng) >= 7 else fg_now
+        except:
+            print("  FNG failed — using neutral 50")
 
         if fg_now <= 20: fg_zone = "EXTREME_FEAR"
         elif fg_now <= 40: fg_zone = "FEAR"
@@ -1917,11 +1970,11 @@ def analyze(coin, signal_type="swing"):
     if signal_type == "swing":
         prices, highs, lows, vols, opens = fetch_klines_full(sym, "1d", 730)
         sl_pct = 0.05; tp1_pct = 0.05; tp2_pct = 0.10; tp3_pct = 0.15; tp4_pct = 0.20
-        min_score = 50; hold = "Days to weeks"
+        min_score = 30; hold = "Days to weeks"  # DEBUG: lowered to see structures
     else:
         prices, highs, lows, vols, opens = fetch_klines_full(sym, "4h", 540)
         sl_pct = 0.03; tp1_pct = 0.03; tp2_pct = 0.05; tp3_pct = 0.08; tp4_pct = 0.12
-        min_score = 45; hold = "1-3 days"
+        min_score = 25; hold = "1-3 days"  # DEBUG: lowered to see structures
 
     if len(prices) < 50:
         return None
@@ -2064,7 +2117,8 @@ def analyze(coin, signal_type="swing"):
     ctx_adj = context_adjustment(sym, market_ctx)
     final_score = max(0, min(100, conf_score + ctx_adj + degree_bonus))
 
-    if final_score < 35:
+    print("    [" + signal_type + "] " + sym + " score=" + str(final_score) + " struct=" + struct_type + " phase=" + phase, flush=True)
+    if final_score < 25:
         print("    [" + signal_type + "] " + sym + " BLOCKED: score too low=" + str(final_score))
         return None
 
@@ -2458,7 +2512,7 @@ def main():
                             }
                             time.sleep(2)
                 else:
-                    print("-")
+                    print("  " + sym + " scalp: NO SIGNAL", flush=True)
 
                 time.sleep(1)
 
