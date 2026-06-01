@@ -485,7 +485,7 @@ def analyze(sym, mode):
 
     # Score
     sc = score_signal(sig, c, h, l, phase)
-    if sc < MIN_SIGNAL_SCORE: return None
+    if sc < MIN_SCORE: return None
 
     # Market context
     ctx = market_ctx()
@@ -646,7 +646,7 @@ def main():
     api()
     load()
     market_ctx()
-    print(f"SIGNALSYM V10 | {len(COINS)} coins | min score {MIN_SIGNAL_SCORE} | {len(sent)} cooldowns")
+    print(f"SIGNALSYM V10 | {len(COINS)} coins | min score {MIN_SCORE} | {len(sent)} cooldowns")
 
     time.sleep(10)
     load()
