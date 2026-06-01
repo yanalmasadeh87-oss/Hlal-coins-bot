@@ -93,7 +93,7 @@ def start_api_server():
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "7975488031:AAHLdeNTM-YIItriXwradU4bPyCMdR-mAIY")
 CHAT_ID        = os.getenv("TELEGRAM_CHAT_ID", "8422276082")
 
-BN_BASE        = "https://api.binance.com/api/v3"
+BN_BASE        = "https://api.binance.us/api/v3"  # US-compatible endpoint
 TG_BASE        = None
 
 # ================================================================
@@ -2441,13 +2441,18 @@ def main():
 
         # Quick Binance connectivity check before scanning
         try:
-            test = requests.get(BN_BASE + "/ping", timeout=5)
-            if test.status_code != 200:
-                print("  Binance API not responding (status=" + str(test.status_code) + ") — skipping scan", flush=True)
+            test = requests.get(BN_BASE + "/ping", timeout=10)
+            if test.status_code == 451:
+                print("  Binance geo-blocked (451) — check BN_BASE URL", flush=True)
+                time.sleep(300)
+                continue
+            elif test.status_code != 200:
+                print("  Binance not responding (status=" + str(test.status_code) + ") — waiting 60s", flush=True)
                 time.sleep(60)
                 continue
-        except:
-            print("  Binance unreachable — skipping scan", flush=True)
+            print("  Binance ping OK", flush=True)
+        except Exception as e:
+            print("  Binance unreachable: " + str(e) + " — waiting 60s", flush=True)
             time.sleep(60)
             continue
 
