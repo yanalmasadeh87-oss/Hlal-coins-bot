@@ -2379,7 +2379,7 @@ def main():
 
         for coin in HALAL_WATCHLIST:
             sym = coin["sym"]
-            print("  " + sym + "...", end=" ", flush=True)
+            print("  " + sym + "...", flush=True)
 
             try:
                 # SWING analysis
@@ -2419,7 +2419,7 @@ def main():
                             }
                             time.sleep(2)
                 else:
-                    print("-", end=" ")
+                    print("  " + sym + " swing: NO SIGNAL", flush=True)
 
                 # SCALP analysis
                 scalp_key = sym + "_scalp"
@@ -2463,8 +2463,10 @@ def main():
                 time.sleep(1)
 
             except Exception as e:
-                print("err:" + str(e))
-                time.sleep(5)
+                import traceback
+                print("  " + sym + " CRASH: " + str(e), flush=True)
+                print("  " + traceback.format_exc()[-300:], flush=True)
+                time.sleep(2)
 
         print("\nScan #" + str(scan_count) + " - " + str(signals) + " signal(s), " + str(watches) + " watch(es) - next in 15min")
         active_count = len([t for t in active_trades.values() if not t.get("closed")])
