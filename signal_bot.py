@@ -1984,17 +1984,12 @@ def analyze(coin, signal_type="swing"):
     ath = global_ath if global_ath > 0 else max(prices)
     pct_ath = (current - ath) / ath * 100
 
-    try:
-        regime = detect_volatility_regime(prices, highs, lows)
-        atr = regime.get("atr", calc_atr(highs, lows, prices))
-        pivots, win, min_move = detect_pivots_adaptive(prices, highs, lows, regime, signal_type)
-        phase = read_market_phase(prices, highs, lows, pivots, current, pct_ath)
-        print("    [" + signal_type + "] " + sym + " phase=" + phase + " rsi=pending")
-    except Exception as e:
-        import traceback
-        print("    [" + signal_type + "] " + sym + " CRASH in phase detection: " + str(e))
-        print("    " + traceback.format_exc().split("\n")[-3])
-        return None
+    # Phase detection — errors bubble to main loop try/except
+    regime = detect_volatility_regime(prices, highs, lows)
+    atr = regime.get("atr", calc_atr(highs, lows, prices))
+    pivots, win, min_move = detect_pivots_adaptive(prices, highs, lows, regime, signal_type)
+    phase = read_market_phase(prices, highs, lows, pivots, current, pct_ath)
+    print("  [" + signal_type + "] " + sym + " phase=" + phase, flush=True)
 
     if phase == "DOWNTREND":
         print("    [" + signal_type + "] " + sym + " BLOCKED: DOWNTREND phase")
@@ -2044,18 +2039,12 @@ def analyze(coin, signal_type="swing"):
     # V7: Extended wave detection
     extended_wave = detect_extended_wave(pivots, current)
 
-    try:
-        chart = recognize_chart_structure(
-            prices, highs, lows, opens, pivots, current, pct_ath,
-            rsi_val, macd_bull, vol_dec, vol_exp, stoch,
-            trend, regime, phase, weekly_prices, sym, signal_type,
-            liquidity_info, None, candlestick_info, extended_wave
-        )
-    except Exception as e:
-        import traceback
-        print("    [" + signal_type + "] " + sym + " ERROR in recognize_chart_structure: " + str(e))
-        print("    " + traceback.format_exc().split("\n")[-3])
-        return None
+    chart = recognize_chart_structure(
+        prices, highs, lows, opens, pivots, current, pct_ath,
+        rsi_val, macd_bull, vol_dec, vol_exp, stoch,
+        trend, regime, phase, weekly_prices, sym, signal_type,
+        liquidity_info, None, candlestick_info, extended_wave
+    )
 
     struct_type = chart.get("type", "UNKNOWN")
     struct_label = chart.get("label", "Unknown")
