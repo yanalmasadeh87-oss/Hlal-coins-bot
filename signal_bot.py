@@ -128,81 +128,59 @@ _ctx_history   = []
 _structure_memory = {}
 
 # ================================================================
-# STATE PERSISTENCE via Telegram
-# Render wipes /tmp on every deploy. So we use Telegram itself
-# to store the sent_signals state. On startup, the bot reads its
-# own last state message and restores cooldowns from it.
-# This survives ALL restarts, deploys, and crashes.
+# STATE PERSISTENCE
+# Try multiple paths in order — use the first writable one.
+# /opt/render/project/src/ persists across Render deploys.
+# Falls back to /tmp if running locally or path not available.
 # ================================================================
-TG_STATE_MARKER = "SIGNALSYM_STATE_V1:"
+def _get_state_path():
+    """Find the best persistent path available."""
+    candidates = [
+        "/opt/render/project/src/signalsym_state.json",
+        "/app/signalsym_state.json",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "signalsym_state.json"),
+        "/tmp/signalsym_state.json",
+    ]
+    for path in candidates:
+        try:
+            dir_ = os.path.dirname(path)
+            if os.access(dir_, os.W_OK):
+                return path
+        except:
+            pass
+    return "/tmp/signalsym_state.json"
+
+STATE_FILE = _get_state_path()
 
 def save_state():
-    """Save cooldowns to Telegram as a pinned message."""
-    if not TG_BASE:
-        return
+    """Persist cooldowns to disk."""
     try:
-        state = {
-            "sent_signals": sent_signals,
-            "saved_at": time.time()
-        }
-        msg_text = TG_STATE_MARKER + json.dumps(state)
-        requests.post(TG_BASE + "/sendMessage",
-            json={"chat_id": CHAT_ID, "text": msg_text,
-                  "disable_notification": True},
-            timeout=10)
+        state = {"sent_signals": sent_signals, "saved_at": time.time()}
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f)
     except Exception as e:
         print("  [STATE] Save failed: " + str(e))
 
 def load_state():
-    """Read cooldowns from Telegram chat history on startup."""
+    """Load cooldowns from disk on startup."""
     global sent_signals
-    if not TG_BASE:
-        return
     try:
-        # Fetch last 50 messages to find the most recent state
-        r = requests.get(TG_BASE + "/getUpdates",
-            params={"limit": 100, "offset": -100},
-            timeout=15)
-        if r.status_code != 200:
-            print("  [STATE] Could not read Telegram history")
-            return
-
-        updates = r.json().get("result", [])
-        # Also check sent messages via getChat
-        # Use a simpler approach: store in a known message we can retrieve
-        # Search updates for our state marker
-        latest_state = None
-        latest_time  = 0
-
-        for update in updates:
-            msg = update.get("message", {})
-            text = msg.get("text", "")
-            if text.startswith(TG_STATE_MARKER):
-                try:
-                    state = json.loads(text[len(TG_STATE_MARKER):])
-                    msg_time = msg.get("date", 0)
-                    if msg_time > latest_time:
-                        latest_time  = msg_time
-                        latest_state = state
-                except:
-                    pass
-
-        if latest_state:
-            age = time.time() - latest_state.get("saved_at", 0)
-            if age < 86400:  # Only use if less than 24hr old
-                loaded = latest_state.get("sent_signals", {})
-                # Only restore signals within their cooldown window
-                now = time.time()
-                for key, ts in loaded.items():
-                    cooldown = 28800 if "swing" in key else 14400
-                    if now - ts < cooldown:
-                        sent_signals[key] = ts
-                print("  [STATE] Restored " + str(len(sent_signals)) +
-                      " active cooldowns from Telegram (age=" + str(round(age/60)) + "min)")
-            else:
-                print("  [STATE] State too old — starting fresh")
+        with open(STATE_FILE) as f:
+            state = json.load(f)
+        age = time.time() - state.get("saved_at", 0)
+        if age < 86400:
+            now = time.time()
+            for key, ts in state.get("sent_signals", {}).items():
+                cooldown = 28800 if "swing" in key else 14400
+                if now - ts < cooldown:
+                    sent_signals[key] = ts
+            print("  [STATE] Restored " + str(len(sent_signals)) +
+                  " cooldowns from " + STATE_FILE +
+                  " (age=" + str(round(age/60)) + "min)")
         else:
-            print("  [STATE] No previous state found — starting fresh")
+            print("  [STATE] State too old — starting fresh")
+    except FileNotFoundError:
+        print("  [STATE] No state file — starting fresh (" + STATE_FILE + ")")
     except Exception as e:
         print("  [STATE] Load error: " + str(e))
 
@@ -2099,8 +2077,7 @@ def main():
 
     start_api_server()
     tg_ok = init_telegram()
-    if tg_ok:
-        load_state()  # Restore cooldowns from Telegram history
+    load_state()  # Restore cooldowns from disk
 
     total=len(HALAL_WATCHLIST)
     t1=[c["sym"] for c in HALAL_WATCHLIST if c["tier"]==1]
@@ -2138,6 +2115,7 @@ def main():
 
         market_ctx = fetch_market_context()
         signals=0; watches=0
+        this_scan_sent = set()  # tracks what was sent THIS scan — dedup within scan
 
         try:
             test=requests.get(BN_BASE+"/ping",timeout=10)
@@ -2173,10 +2151,15 @@ def main():
                         if time.time()-sent_signals.get(swing_key,0)<28800:  # 8hr cooldown
                             print("S(cd)",end=" ")
                         else:
-                            print(str(sw["score"])+"/100["+sw.get("struct_type","")+"]",end=" ")
-                            send_msg(build_msg(sw))
-                            sent_signals[swing_key]=time.time(); signals+=1
-                            save_state()
+                            sig_hash = sym + "_swing_" + str(round(sw["current"],4))
+                            if sig_hash in this_scan_sent:
+                                print("DEDUP(swing)",end=" ")
+                            else:
+                                print(str(sw["score"])+"/100["+sw.get("struct_type","")+"]",end=" ")
+                                send_msg(build_msg(sw))
+                                sent_signals[swing_key]=time.time(); signals+=1
+                                this_scan_sent.add(sig_hash)
+                                save_state()
                             active_trades[swing_key]={"sym":sym,"type":"SWING","entry":sw["current"],
                                 "sl":sw["sl"],"tp1":sw["tp1"],"tp2":sw["tp2"],
                                 "tp3":sw["tp3"],"tp4":sw["tp4"],
@@ -2202,10 +2185,15 @@ def main():
                         if time.time()-sent_signals.get(scalp_key,0)<14400:  # 4hr cooldown
                             print("SC(cd)")
                         else:
-                            print(str(sc["score"])+"/100["+sc.get("struct_type","")+"]")
-                            send_msg(build_msg(sc))
-                            sent_signals[scalp_key]=time.time(); signals+=1
-                            save_state()
+                            sig_hash = sym + "_scalp_" + str(round(sc["current"],4))
+                            if sig_hash in this_scan_sent:
+                                print("DEDUP(scalp)")
+                            else:
+                                print(str(sc["score"])+"/100["+sc.get("struct_type","")+"]")
+                                send_msg(build_msg(sc))
+                                sent_signals[scalp_key]=time.time(); signals+=1
+                                this_scan_sent.add(sig_hash)
+                                save_state()
                             active_trades[scalp_key]={"sym":sym,"type":"SCALP","entry":sc["current"],
                                 "sl":sc["sl"],"tp1":sc["tp1"],"tp2":sc["tp2"],
                                 "tp3":sc["tp3"],"tp4":sc["tp4"],
