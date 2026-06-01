@@ -1970,13 +1970,14 @@ def analyze(coin, signal_type="swing"):
     if signal_type == "swing":
         prices, highs, lows, vols, opens = fetch_klines_full(sym, "1d", 730)
         sl_pct = 0.05; tp1_pct = 0.05; tp2_pct = 0.10; tp3_pct = 0.15; tp4_pct = 0.20
-        min_score = 30; hold = "Days to weeks"  # DEBUG: lowered to see structures
+        min_score = 50; hold = "Days to weeks"
     else:
         prices, highs, lows, vols, opens = fetch_klines_full(sym, "4h", 540)
         sl_pct = 0.03; tp1_pct = 0.03; tp2_pct = 0.05; tp3_pct = 0.08; tp4_pct = 0.12
-        min_score = 25; hold = "1-3 days"  # DEBUG: lowered to see structures
+        min_score = 45; hold = "1-3 days"
 
     if len(prices) < 50:
+        print("  [" + signal_type + "] " + sym + " BLOCKED: only " + str(len(prices)) + " candles from Binance", flush=True)
         return None
 
     current = prices[-1]
